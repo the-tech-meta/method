@@ -5575,8 +5575,9 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone)
                     "Claude Code's AGENTS.md support, version 2.1.277: from InfoWorld, 21 September 2026.",
                 ],
             ),
-            # what the public repo holds and what it does not: the scans and data/meta.json are not in it. The page asks readers to
-            # report a repo through the "Get in touch" link of its list of repos, so the block does not point to the repo's issues
+            # what the public repo holds, and that a figure cannot be checked from it alone (the scans and data/meta.json are not in
+            # it, which the repo's README says). The page asks readers to report a repo through the "Get in touch" link of its
+            # list of repos, so the block does not point to the repo's issues
             block(
                 "Open source",
                 "The method is in a public repo, %s, under the MIT licence." % METHOD_REPO_NAME,
@@ -5584,8 +5585,7 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone)
                     "It holds the code that picks the repos, scans them, reads the rules and computes every figure of "
                     "this page and the sentences that quote them, with some of its tests.",
                     "It holds both leagues, every repo by name, and the rule they were built by.",
-                    "It does not hold the scans, the files read from GitHub's API or the data this page is drawn from. A "
-                    "figure cannot be checked from the repo alone: it shows how the figure is computed, and scanning the "
+                    "A figure cannot be checked from the repo alone: it shows how the figure is computed, and scanning the "
                     "same repos again gives the figures of the day of that scan.",
                 ],
                 links=[[METHOD_REPO_NAME, METHOD_REPO]],
