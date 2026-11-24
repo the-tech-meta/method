@@ -4202,8 +4202,7 @@ def lens_block_readings(pro, by, rows):
 
 def test_share(view):
     """Test files among code files, at the first snapshot and today, over the repos with MIN_CODE_FILES or more at both and a code
-    file at every snapshot, so that the series is over the same repos throughout: a repo down to a file or two at one
-    snapshot would give a share of 0 over 0."""
+    file at every snapshot: a repo down to a file or two at one snapshot would give a share of 0 over 0."""
     part = lambda f: f["code"][0] / f["code"][1]
     kept = [
         r
@@ -4217,8 +4216,6 @@ def test_share(view):
         "first": round(statistics.median(part(a) for a, b in both), 3),
         "now": round(statistics.median(part(b) for a, b in both), 3),
         "up": sum(1 for a, b in both if part(b) > part(a)),
-        # the same repos at every snapshot: a repo read at the first one is read at all of them
-        "series": [round(statistics.median(part(r["f"][i]) for r in kept), 3) for i in range(len(kept[0]["f"]))],
     }
 
 
@@ -4727,22 +4724,16 @@ def lens(views, by, shown, rows, cards, dates):
             "label": LENSES[0][1],
             "about": LENSES[0][2],
             # written from the section's own practices, whichever they are, so that it still holds when one leaves the
-            # page
-            "intro": counts_line(of_field("checks"), then),
-            "tests": dict(
-                tests,
-                text="Test files are %s of the code files in the median pro repo, up from %s in %s. The share rose in %d of the %d "
-                "pro repos read at both dates. On the ladder it went from %s to %s, over %d repos."
-                % (
-                    pct(tests["pro"]["now"]),
-                    pct(tests["pro"]["first"]),
-                    then,
-                    tests["pro"]["up"],
-                    tests["pro"]["n"],
-                    pct(tests["ladder"]["first"]),
-                    pct(tests["ladder"]["now"]),
-                    tests["ladder"]["n"],
-                ),
+            # page; then the share of test files in the median repo of each league, which is not a count of practices
+            "intro": counts_line(of_field("checks"), then)
+            + " In the median repo, test files went from %s to %s of the code files in the pro scene since %s, and from %s to %s "
+            "on the ladder."
+            % (
+                pct(tests["pro"]["first"]),
+                pct(tests["pro"]["now"]),
+                then,
+                pct(tests["ladder"]["first"]),
+                pct(tests["ladder"]["now"]),
             ),
             "shift": {
                 "title": "Lint and format tools, %s to today" % then,
@@ -5098,6 +5089,11 @@ def ordinal(n):
 # once (the link is a mailto to the owner's address), and draws nothing more when `copy.method_invite` is absent.
 METHOD_INVITE = "How a repo is picked"
 
+# The public repo of the method: this code, some of its tests and the two panels, under the MIT licence. The Method tab links
+# to it from its summary and from the block that says what it holds.
+METHOD_REPO = "https://github.com/the-tech-meta/method"
+METHOD_REPO_NAME = METHOD_REPO.split("github.com/")[1]  # "owner/repo", as the block names it
+
 # The sections of the Method tab that hold blocks, in the order a reader follows, each the key of its list in `copy.method`
 # and of its place on the page (`#m-<key>`): who is counted (under the two leagues' card), what is read, how a figure is
 # shown, what it cannot say.
@@ -5295,7 +5291,7 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone)
         [
             "Detection",
             "Each practice is a fingerprint: a rule on file paths, file text, commit signatures or bot accounts. No "
-            "language model reads anything.",
+            "language model reads anything. The code is open source.",
         ],
         [
             "Time span",
@@ -5578,6 +5574,21 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone)
                     "Cursor's co-author trailer: from users' posts on Cursor's forum dated 27 January 2026.",
                     "Claude Code's AGENTS.md support, version 2.1.277: from InfoWorld, 21 September 2026.",
                 ],
+            ),
+            # what the public repo holds and what it does not: the scans and data/meta.json are not in it. The page asks readers to
+            # report a repo through the "Get in touch" link of its list of repos, so the block does not point to the repo's issues
+            block(
+                "Open source",
+                "The method is in a public repo, %s, under the MIT licence." % METHOD_REPO_NAME,
+                items=[
+                    "It holds the code that picks the repos, scans them, reads the rules and computes every figure of "
+                    "this page and the sentences that quote them, with some of its tests.",
+                    "It holds both leagues, every repo by name, and the rule they were built by.",
+                    "It does not hold the scans, the files read from GitHub's API or the data this page is drawn from. A "
+                    "figure cannot be checked from the repo alone: it shows how the figure is computed, and scanning the "
+                    "same repos again gives the figures of the day of that scan.",
+                ],
+                links=[[METHOD_REPO_NAME, METHOD_REPO]],
             ),
         ],
         # how a figure is shown
@@ -6152,6 +6163,13 @@ def main(args):
     if METHOD_INVITE not in titles:
         raise ValueError("the invitation names a block of the Method tab that does not exist")
     sentences["method_invite"] = METHOD_INVITE
+    # the summary's links, the blocks' way: [words, address], the first time the words appear in its texts, in order
+    sentences["method_short_links"] = [["open source", METHOD_REPO]]
+    if any(
+        words not in " ".join(text for _, text in sentences["method_short"])
+        for words, _ in sentences["method_short_links"]
+    ):
+        raise ValueError("a link of the Method tab's summary names words it does not hold")
     build = build_section(
         items, [c for c in practice_cards if c["id"] in shown and by[c["id"]]["field"] == "build"], dates
     )
