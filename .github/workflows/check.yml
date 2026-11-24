@@ -1,0 +1,32 @@
+# The tests and ruff (lint and format) on every push and pull request. No secret, a read-only token, and each action
+# pinned to a commit, its tag in a comment: a tag can be moved, a commit cannot. The checkout keeps no token in the
+# clone, since nothing after it talks to GitHub. To move an action, resolve its new tag with
+# `gh api repos/actions/<name>/tags` and write the commit and the tag.
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: tests, lint, format
+    # Not ubuntu-latest: it has no Python 3.9, the version the code targets.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.9"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: python3 -I -m pip install -r requirements-dev.txt
+      - run: python3 -I -m unittest discover -s pipeline/tests -t pipeline/tests
+      - run: ruff check --output-format github
+      - run: ruff format --check

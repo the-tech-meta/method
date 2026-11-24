@@ -1,0 +1,13 @@
+# ruff for pipeline/: its linter looks for defects only, no style rule, and its formatter (ruff format --check) holds the
+# layout, which no lint rule judges. Lines of 120 at most, double quotes, its defaults otherwise.
+target-version = "py39"
+include = ["pipeline/**/*.py"]
+line-length = 120
+
+[lint]
+# F: undefined and unused names. E9: syntax. E711-E722: comparisons to None or a type, bare except.
+# PLE: pylint's errors (bad format strings, wrong calls). B: bugbear's likely bugs.
+select = ["F", "E9", "E711", "E712", "E721", "E722", "PLE", "B"]
+ignore = [
+    "B007",  # an unused loop name: kept where it says what the loop walks over
+]

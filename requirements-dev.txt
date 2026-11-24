@@ -1,0 +1,2 @@
+# The tool that lints and formats pipeline/, ruff. The pipeline itself needs nothing beyond the standard library.
+ruff==0.17.6

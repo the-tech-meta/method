@@ -1,0 +1,12 @@
+# What running the pipeline leaves behind
+.cache/
+data/raw/
+__pycache__/
+*.tmp
+.venv/
+.ruff_cache/
+.DS_Store
+# What the scans and the counting write: this repo holds the method and the panels, not the scans
+data/scan/
+data/api/
+data/meta.json
