@@ -106,7 +106,7 @@ NOT_REVIEWERS = ("github-advanced-security", "github-code-quality", "github-acti
 BAR = 0.05
 # Every candidate, one line each, with its three switches: its field (the section of Practices it is in: build, checks, security,
 # ship), its kind ("agent", made for coding agents; "any", not specific to AI) and whether it is on. Changing one is a one-line edit
-# here, then analyze.py: the sections, the map, What moved, What left, What stayed, Every number, the tags and the counts follow.
+# here, then analyze.py: the sections, the map, What moved, What left, Every number, the tags and the counts follow.
 # How each is read is apart: ITEMS (the tree, the commits, the API, over every repo; TRACES for the unions of traces) and LENS_ITEMS
 # (the lens read of a snapshot, over the repos read for it).
 PRACTICES = {
@@ -760,12 +760,14 @@ ABOUT = {
 # ranking what MIN_BASE pro repos or more ever had, so that no ranked row is under the floor of a
 # percentage; the others are chips. Readings are written for those rows only. The page reads SHOWN_LEFT from meta.json.
 SHOWN_MOVE, SHOWN_LEFT = 3, MIN_BASE
-# The practices of each section of Practices (Build, Test, Secure) the page shows before a button shows the rest: the
-# largest shares of the pro scene.
+# The rows What moved shows at each end before its button shows the rest.
 SHOWN_PRACTICES = 5
-# What stayed, a list of its own beside What left: of the pro repos that had a practice this many snapshots ago or
-# earlier, a year, the share that still have it today. A year, so that a practice is kept only
-# where it had the time to go: a practice most repos added this year is in neither list, not at the top of this one.
+# The rows each list of practices of the Practices tab (Build, Test, Secure, Ship) and What left show before their buttons
+# show more, and how many more "Show N more" shows at a click. Those five lists only: What moved uses SHOWN_PRACTICES,
+# History its own count.
+PRACTICES_FIRST = 3
+# Of the pro repos that had a practice this many snapshots ago or earlier, a year, the share that still have it today: the other
+# end of the report note on what left. A year, so that a practice is kept only where it had the time to go.
 STAYED_BACK = 12
 # A list cut to its first rows (and What moved to its first and last) shows whole when the cut would hide fewer rows than this.
 CUT_MIN = 3
@@ -1024,7 +1026,7 @@ def months(n):
 
 def span_copy(back, shown):
     """What the page says of the months between "then" and now (back: BACK) and of the least move that is shown (shown:
-    SHOWN_MOVE), written here so that the page's source types neither: the heading's intro, the note under What moved,
+    SHOWN_MOVE), written here so that the page's source types neither: What moved's intro, the note under What moved,
     the intro of Every number, and the short phrases that name the span ("In three months", the map's key, the tails'
     label and the column of Every number, in digits). In letters where the page says "three", in digits where it labels
     a chart or a column."""
@@ -1270,7 +1272,8 @@ def departures(repos, series_of):
 
 
 def stayed(repos, series_of):
-    """Of the repos that had something STAYED_BACK snapshots ago or earlier, those that still have it today: What stayed."""
+    """Of the repos that had something STAYED_BACK snapshots ago or earlier, those that still have it today: the report note's
+    other end (see kept_first)."""
     had = [s for s in map(series_of, repos) if any(s[:-STAYED_BACK])]
     return share(sum(1 for s in had if s[-1]), len(had))
 
@@ -1282,15 +1285,13 @@ def in_left(row):
 
 
 def in_stayed(row):
-    """A row of What stayed: SHOWN_LEFT pro repos or more had it a year ago or earlier (STAYED_BACK), and most of them still do."""
+    """A practice kept: SHOWN_LEFT pro repos or more had it a year ago or earlier (STAYED_BACK), and most of them still do."""
     return row["stayed"]["n"] >= SHOWN_LEFT and 2 * row["stayed"]["k"] > row["stayed"]["n"]
 
 
 def left_lists(rows):
-    """The two lists of the Report tab, as ids in their order (each shows its first SHOWN_PRACTICES rows, then a
-    button): What left, the largest share taken out first, then more repos, then a smaller base; What stayed, the
-    largest share kept first, then a larger base. A practice is in both where 3 pro repos or more took it out and most
-    of those that had it a year ago kept it."""
+    """The list of What left, as ids in its order (it shows its first PRACTICES_FIRST rows, then its buttons): the largest
+    share taken out first, then more repos, then a smaller base."""
     return {
         "left": [
             row["id"]
@@ -1298,26 +1299,24 @@ def left_lists(rows):
                 filter(in_left, rows), key=lambda row: (-row["left"]["p"], -row["left"]["k"], row["left"]["n"])
             )
         ],
-        "stayed": [
-            row["id"]
-            for row in sorted(filter(in_stayed, rows), key=lambda row: (-row["stayed"]["p"], -row["stayed"]["n"]))
-        ],
     }
 
 
+def kept_first(rows):
+    """The practices kept, as ids, the largest share kept a year on first, then a larger base: the report note on what left
+    names the first two as its other end."""
+    return [
+        row["id"] for row in sorted(filter(in_stayed, rows), key=lambda row: (-row["stayed"]["p"], -row["stayed"]["n"]))
+    ]
+
+
 def left_copy(dates):
-    """The intros of What left and What stayed: they hold the first snapshot, the floors and the span of What stayed."""
+    """The intro of What left: it holds the first snapshot and the floor."""
     first = AS_OF.replace(year=int(dates[0][:4]), month=int(dates[0][5:7]), day=1).strftime("%B %Y")
-    span = "a year" if STAYED_BACK == 12 else months(STAYED_BACK)
     return {
         "left_intro": "Of the pro repos that had a practice at any monthly snapshot since %s, the share that took it out, and "
         "when. Keeping a file costs nothing, so a removal says more than a stay. Most taken out first. Practices fewer than %s "
         "pro repos took out are left out." % (first, words(SHOWN_MOVE)),
-        "stayed_intro": "Of the pro repos that had a practice %s ago or earlier, the share that still have it: each had %s to "
-        "take it out. Most kept first. Only what %d pro repos or more had then, and most of them kept; a practice most repos added "
-        "since is too new to tell." % (span, span, SHOWN_LEFT),
-        # the head of its list's figures
-        "stayed_cap": "Pro repos that had it %s ago and still do" % span,
     }
 
 
@@ -2305,7 +2304,7 @@ def readings(leagues, items, left_rows, dates, shown=None):
             % (of_the(reviewed, len(added)), review_md)
         )
 
-    # ---------- What left, what stayed: since the first snapshot
+    # ---------- What left: since the first snapshot
     had = [r for r in pro if any(f and f["instructions"] for f in r["f"])]
     swapped, renamed = collections.Counter(), 0
     for r in had:
@@ -2415,7 +2414,8 @@ def readings(leagues, items, left_rows, dates, shown=None):
     move = {k: v for k, v in move.items() if named("move", k)}
     stay = {k: v for k, v in stay.items() if named("stay", k)}
     move = {k: v for k, v in move.items() if by[k]["history"] and shown_move(by[k]["pro"]["moves"])}
-    stay = {k: v for k, v in stay.items() if in_left(gone[k]) or in_stayed(gone[k])}
+    # a reading of a row of What left
+    stay = {k: v for k, v in stay.items() if in_left(gone[k])}
     for text in list(move.values()) + list(stay.values()):
         if len(text) > READING_MAX:
             raise ValueError("reading over %d characters (%d): %s" % (READING_MAX, len(text), text))
@@ -3026,9 +3026,9 @@ def copy(leagues, items, info, models, ctx, left_rows, jobs, dates, shown=None):
     # the three practices removed most often: the first three of What left
     rows_by = {row["id"]: row for row in left_rows}
     out_most = [rows_by[key] for key in left_lists(left_rows)["left"][:3]]
-    # and the first two of What stayed, the other end of the note: kept by the pro repos that had them a year ago. Not the rows taken
-    # out least: that is What left read backwards, which puts on top what most repos added this year
-    kept_most = [rows_by[key] for key in left_lists(left_rows)["stayed"][:2]]
+    # and the first two kept, the other end of the note: kept by the pro repos that had them a year ago. Not the rows taken out
+    # least: that is What left read backwards, which puts on top what most repos added this year
+    kept_most = [rows_by[key] for key in kept_first(left_rows)[:2]]
     skills_pro = by["skills"]["pro"]
     no_skill = max(i for i, p in enumerate(skills_pro["series"]) if p == 0)
     # the ladder's repos with skills BACK snapshots ago: today's less those that added them, plus those that removed them
@@ -3247,7 +3247,7 @@ def copy(leagues, items, info, models, ctx, left_rows, jobs, dates, shown=None):
                     "form": "bars",
                     "title": "Pro repos that removed it, of those that had it",
                     "value": "of",
-                    # the three taken out most often alone: the other end is another measure, What stayed's, over another base
+                    # the three taken out most often alone: the other end is another measure, the share kept, over another base
                     "groups": [
                         [
                             {
@@ -4191,7 +4191,7 @@ def lens_block_readings(pro, by, rows):
             linted, len(out)
         )
 
-    shown = {row["id"]: in_left(row) or in_stayed(row) for row in rows}
+    shown = {row["id"]: in_left(row) for row in rows}
     move = {k: v for k, v in move.items() if shown_move(by[k]["pro"]["moves"])}
     stay = {k: v for k, v in stay.items() if shown.get(k)}
     for text in list(move.values()) + list(stay.values()):
@@ -5657,8 +5657,6 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone)
                 items=[
                     "The ranking holds what %d pro repos or more ever had and %s or more took out, by the share that took it out."
                     % (SHOWN_LEFT, words(SHOWN_MOVE)),
-                    "What stayed holds what %d pro repos or more had %s ago or earlier, by the share that still has it, "
-                    "where most still do." % (SHOWN_LEFT, "a year" if STAYED_BACK == 12 else months(STAYED_BACK)),
                     "The others are chips under Tried by a few.",
                     "ESLint and Prettier are ranked with the practices: tools most repos started from.",
                     "llms.txt is left out, and has no Kept share in Every number: it usually moves into the docs build, "
@@ -6194,8 +6192,10 @@ def main(args):
             "min_base": MIN_BASE,
             # What left ranks the practices that this many pro repos or more ever had; the others are chips
             "shown_left": SHOWN_LEFT,
-            # each section of Practices shows this many of its practices, the rest behind a button
+            # What moved shows this many of its practices at each end, the rest behind a button
             "shown_practices": SHOWN_PRACTICES,
+            # each section of Practices and What left show this many, and "Show N more" this many more at a click
+            "practices_first": PRACTICES_FIRST,
             # a list cut to its first rows shows whole when the cut would hide fewer rows than this
             "cut_min": CUT_MIN,
             # the bar a candidate passes to be on the page (a share of the pro scene at the last snapshot), and the candidates
@@ -6209,7 +6209,7 @@ def main(args):
             "events": [{"month": m, "label": label} for m, label, _ in EVENTS],
             "builds": build_rows,
             "left": left_rows,
-            # the rows of What left and of What stayed, as ids in their order (left_lists)
+            # the rows of What left, as ids in their order (left_lists)
             "lefts": left_lists(left_rows),
             "contexts": ctx,
             # the first section of Practices, Build: the practices of the map, the timeline of their releases, the outside
