@@ -5204,7 +5204,7 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone,
             ),
             block(
                 "Release dates",
-                "On the History charts and on Build's timeline, releases are dated to the month from press coverage. On "
+                "On the History charts and on Code's timeline, releases are dated to the month from press coverage. On "
                 "the timeline, each links to its source.",
                 items=[
                     "Cursor's co-author trailer: from users' posts on Cursor's forum dated 27 January 2026.",
@@ -5411,8 +5411,9 @@ MAX_TAGS = 2
 
 # The fields, the sections of Practices, in the page's order, with their names. A practice's field is its field in PRACTICES, read at
 # the call (field_of); the rows of What left that are not practices have theirs here: Build for the instruction files of one tool,
-# Test for ESLint and Prettier
-FIELDS = [("build", "Build")] + [(key, label) for key, label, _ in LENSES]
+# Test for ESLint and Prettier. The first field's key is `build` and its name Code: a key is never read, and the page's addresses,
+# the viewing options a reader's browser keeps and the checks' selectors are made of it
+FIELDS = [("build", "Code")] + [(key, label) for key, label, _ in LENSES]
 FIELD = dict({rule: "build" for rule, _ in TOOL_FILES}, **{key: "checks" for key, _, _ in LENS_LEFT})
 
 
@@ -5506,10 +5507,11 @@ LEAD_LEFT = 0.25
 # own pipeline, outside the method: without the file, as in the method's public repo, the leads have none).
 # What each is, in our words, and the prompts, ours too, with no figure in them. The cooldown is shown for the tools the
 # most pro repos set it in, LEAD_LINES at most, each with its count (the lens list cooldown_in).
+# Each resource names the column it stands in on the card ("col", from 1): the prompt alone in the first, the others after it,
+# a column holding the resources listed under it from top to bottom. In the data they keep the order they are read in.
 RESOURCES = DATA / "resources.json"
 LEAD_RES = {
-    "pointer": "A CLAUDE.md that only points to AGENTS.md",
-    "agents_md": "AGENTS.md files of pro repos whose CLAUDE.md points to them",
+    "agents_md": "AGENTS.md files whose CLAUDE.md points to them",
     "trigger": "Who can trigger the agent",
     "tools": "The tools the agent may use",
     "pin": "An action pinned to a commit, with its version in a comment",
@@ -5547,7 +5549,6 @@ def read_resources(pro):
     res = read_json(RESOURCES)
     ci = res.get("agent_ci") or {}
     return {
-        "pointer": res.get("pointer") if fresh(res.get("pointer")) else None,
         "agents_md": [e for e in res.get("agents_md") or [] if fresh(e)],
         "agent_ci": ci if ci and all(fresh(e) for e in ci.values()) else None,
         "pin": res.get("pin") if fresh(res.get("pin")) else None,
@@ -5555,10 +5556,12 @@ def read_resources(pro):
     }
 
 
-def code_res(label, e):
-    """An excerpt as a lead shows it: what it is, where it is read, its link at the commit, its lines."""
+def code_res(label, e, col):
+    """An excerpt as a lead shows it: what it is, where it is read, its link at the commit, its lines, the column it stands
+    in."""
     return {
         "kind": "code",
+        "col": col,
         "label": label,
         "repo": e["repo"],
         "path": e["path"],
@@ -5568,7 +5571,7 @@ def code_res(label, e):
 
 
 def prompt_res(key):
-    return {"kind": "prompt", "label": LEAD_PROMPT_LABEL, "code": LEAD_PROMPTS[key]}
+    return {"kind": "prompt", "col": 1, "label": LEAD_PROMPT_LABEL, "code": LEAD_PROMPTS[key]}
 
 
 def lead_notes(notes, leagues, by, left_rows, lenses, more, studies, dates):
@@ -5585,20 +5588,20 @@ def lead_notes(notes, leagues, by, left_rows, lenses, more, studies, dates):
     res = read_resources(pro)
 
     def resources(key):
-        out = []
-        if key == "one_file":
-            # the example files first, the taller of the two beside each other on the page, then the pointer's one line
-            if res["agents_md"]:
-                files = [{"repo": e["repo"], "path": e["path"], "url": permalink(e)} for e in res["agents_md"]]
-                out.append({"kind": "files", "label": LEAD_RES["agents_md"], "files": files})
-            if res.get("pointer"):
-                out.append(code_res(LEAD_RES["pointer"], res["pointer"]))
+        # the prompt first, alone in its column; what a lead takes from the pro repos in the columns after it
+        out = [prompt_res(key)]
+        if key == "one_file" and res["agents_md"]:
+            files = [{"repo": e["repo"], "path": e["path"], "url": permalink(e)} for e in res["agents_md"]]
+            out.append({"kind": "files", "col": 2, "label": LEAD_RES["agents_md"], "files": files})
         elif key == "agent_ci" and res.get("agent_ci"):
-            out += [code_res(LEAD_RES[part], res["agent_ci"][part]) for part in ("trigger", "tools")]
+            out += [
+                code_res(LEAD_RES[part], res["agent_ci"][part], col) for col, part in ((2, "trigger"), (3, "tools"))
+            ]
         elif key == "pinned":
             if res.get("pin"):
-                out.append(code_res(LEAD_RES["pin"], res["pin"]))
-            # the cooldown as the tools the most pro repos set it in write it
+                out.append(code_res(LEAD_RES["pin"], res["pin"], 2))
+            # the cooldown as the tools the most pro repos set it in write it; the two set in the most stand together in the
+            # last column, the others under the pin, so that the columns hold two short excerpts each
             where = next(
                 (lst for s in lenses["sections"] for lst in s.get("lists", []) if lst["id"] == "cooldown_in"),
                 {"rows": []},
@@ -5612,10 +5615,11 @@ def lead_notes(notes, leagues, by, left_rows, lenses, more, studies, dates):
                 code_res(
                     LEAD_RES["cooldown"] % (row["label"], row["pro"]["k"], row["pro"]["n"]),
                     res["cooldown"][tools[row["label"]]],
+                    3 if i < 2 else 2,
                 )
-                for row in set_in
+                for i, row in enumerate(set_in)
             ]
-        return out + [prompt_res(key)]
+        return out
 
     def lead(key, practices):
         seen = and_join(sorted({by[k]["seen"] for k in practices if k in by}))
@@ -5989,7 +5993,7 @@ def build_section(items, cards, dates):
 
     return {
         "id": "build",
-        "label": "Build",
+        "label": dict(FIELDS)["build"],
         "about": FIELD_ABOUT["build"],
         # the counts of the list as the page shows it at first, the Basics apart; with them, when the reader includes them
         **basics_intros(items, intro),
