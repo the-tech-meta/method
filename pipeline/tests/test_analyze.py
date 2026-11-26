@@ -176,6 +176,81 @@ class Intros(unittest.TestCase):
         )
 
 
+class Basics(unittest.TestCase):
+    """The rule of the Basics on inputs worked out by hand: a practice not specific to AI that half of the pro scene or more had
+    18 months before the last snapshot, or today when it has no monthly history."""
+
+    MONTHLY = ["%d-%02d-17" % (2025 + (m - 1) // 12, (m - 1) % 12 + 1) for m in range(1, 24)]  # Jan 2025 to Nov 2026
+
+    @staticmethod
+    def item(kind="any", series=None, k=0, n=10):
+        pro = dict(
+            {"now": {"k": k, "n": n, "p": k / n}}, **({} if series is None else {"series": [x / n for x in series]})
+        )
+        return {"kind": kind, "history": series is not None, "pro": pro}
+
+    def test_the_constants(self):
+        self.assertEqual((A.BASIC_MONTHS, A.BASIC_SHARE), (18, 0.5))
+
+    def test_the_reference_is_18_months_before_the_last_snapshot(self):
+        self.assertEqual(self.MONTHLY[A.basic_at(self.MONTHLY)], "2025-05-17")
+        # a day of the month past the reference's: the snapshot before it
+        self.assertEqual(A.basic_at(["2025-05-18", "2025-06-17", "2026-11-17"]), 0)
+        self.assertEqual(A.basic_at(["2025-04-30", "2025-05-18", "2026-11-17"]), 0)
+        self.assertEqual(A.basic_at(["2025-04-30", "2025-05-17", "2026-11-17"]), 1)
+        # the 31st, 18 months back into a month of 30 days: its last day
+        self.assertEqual(A.basic_at(["2024-11-30", "2024-12-01", "2026-05-31"]), 0)
+        # it rolls with the run: a month later, a month later
+        self.assertEqual(self.MONTHLY[A.basic_at(self.MONTHLY[:-1])], "2025-04-17")
+
+    def test_a_short_history_is_judged_at_the_first_snapshot(self):
+        dates = self.MONTHLY[-6:]
+        self.assertEqual(A.basic_at(dates), 0)
+        at = A.basic_at(dates)
+        self.assertTrue(A.is_basic(self.item(series=[5, 5, 5, 5, 5, 5], k=5), at))
+        self.assertFalse(A.is_basic(self.item(series=[4, 5, 6, 7, 8, 9], k=9), at))
+
+    def test_exactly_half_is_a_basic(self):
+        at = A.basic_at(self.MONTHLY)
+        half = [0] * 23
+        half[at] = 5
+        self.assertTrue(A.is_basic(self.item(series=half, k=0), at))
+        under = [0] * 23
+        under[at] = 4
+        self.assertFalse(A.is_basic(self.item(series=under, k=10), at), "today's share does not count with a history")
+        # an odd base: 104 of 209 is under half, 105 is over
+        self.assertFalse(A.is_basic(self.item(series=[104] * 23, k=209, n=209), at))
+        self.assertTrue(A.is_basic(self.item(series=[105] * 23, k=0, n=209), at))
+
+    def test_no_history_is_judged_today(self):
+        self.assertTrue(A.is_basic(self.item(k=5), 4))
+        self.assertFalse(A.is_basic(self.item(k=4), 4))
+
+    def test_a_practice_made_for_agents_is_never_a_basic(self):
+        self.assertFalse(A.is_basic(self.item("agent", series=[10] * 23, k=10), 4))
+        self.assertFalse(A.is_basic(self.item("agent", k=10), 4))
+
+    def test_the_intros_count_the_list_the_page_shows_first(self):
+        items = [
+            dict(i, basic=b) for i, b in ((Intros.item("any", 60, 50), True), (Intros.item("agent", 30, 20), False))
+        ]
+        got = A.basics_intros(items, A.kinds_line)
+        self.assertEqual(got["intro"], "Its one practice is made for coding agents.")
+        self.assertEqual(got["intro_all"], "Of the 2 practices here, 1 is made for coding agents.")
+
+    def test_the_rule_is_written_from_its_numbers(self):
+        items = [{"id": "a", "basic": True}, {"id": "b", "basic": False}]
+        got = A.basics_section(items, self.MONTHLY, A.basic_at(self.MONTHLY))
+        self.assertEqual((got["ids"], got["ref"], got["months"], got["share"]), (["a"], "2025-05-17", 18, 0.5))
+        self.assertEqual(
+            got["rule"],
+            "A Basic is a practice not specific to AI that half of the pro scene or more already had 18 months ago, in May "
+            "2025. One read today only, with no monthly history, is a Basic when half of the pro scene or more has it today.",
+        )
+        short = A.basics_section(items, self.MONTHLY[-6:], 0)
+        self.assertIn("already had at the first snapshot, 5 months ago, in June 2026.", short["rule"])
+
+
 class Series(unittest.TestCase):
     def test_series_counts_the_whole_panel(self):
         # c has no state at snapshots 0 to 2: it is in the base and does not have it

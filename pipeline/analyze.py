@@ -22,6 +22,7 @@ import os
 import re
 import statistics
 import sys
+import urllib.parse
 from fractions import Fraction
 from pathlib import Path
 
@@ -222,6 +223,40 @@ KINDS = ("agent", "any")
 def passes_bar(k, n):
     """Whether k repos of n are BAR of them or more, compared exactly: 11 of 209 passes, 10 does not (no float edge)."""
     return n > 0 and Fraction(k, n) >= Fraction(str(BAR))
+
+
+# The Basics: the practices not specific to AI (kind "any") that BASIC_SHARE of the pro scene or more already had BASIC_MONTHS
+# months before the last snapshot. Each field's list on the page leaves them out by default, so that it opens on the practices
+# that set repos apart, and they have a list of their own; What moved and What left keep them. The reference snapshot rolls with
+# each run (basic_at). A practice with no monthly history (read from the API today only) is judged on today's share. Both
+# numbers are written to meta.json (`basics`), and the page and the Method tab print them from there.
+BASIC_MONTHS = 18
+BASIC_SHARE = 0.5
+
+
+def basic_at(dates):
+    """The index in `dates` of the snapshot a Basic is judged at: the last one on or before the day BASIC_MONTHS months before
+    the last snapshot (the day of the month kept, or the month's last day where it has none), or the first snapshot when the
+    history is shorter than that."""
+    last = dt.date.fromisoformat(dates[-1])
+    y, m = divmod(last.year * 12 + last.month - 1 - BASIC_MONTHS, 12)
+    m += 1
+    days = (dt.date(y + m // 12, m % 12 + 1, 1) - dt.timedelta(days=1)).day
+    target = dt.date(y, m, min(last.day, days)).isoformat()
+    before = [i for i, iso in enumerate(dates) if iso <= target]
+    return before[-1] if before else 0
+
+
+def is_basic(item, at):
+    """Whether a counted practice is a Basic: not specific to AI, and in BASIC_SHARE of the pro repos or more at the snapshot
+    `at` (basic_at), or today for one with no monthly history. Compared on counts, so exactly half is a Basic and no rounding
+    of a share decides it."""
+    if item["kind"] != "any":
+        return False
+    pro = item["pro"]
+    n = pro["now"]["n"]
+    k = round(pro["series"][at] * n) if item["history"] else pro["now"]["k"]
+    return n > 0 and Fraction(k, n) >= Fraction(str(BASIC_SHARE))
 
 
 # How each practice that is a union of traces is read: a repo has it at a snapshot when any one of its traces is there.
@@ -763,8 +798,8 @@ SHOWN_MOVE, SHOWN_LEFT = 3, MIN_BASE
 # The rows What moved shows at each end before its button shows the rest.
 SHOWN_PRACTICES = 5
 # The rows each list of practices of the Practices tab (Build, Test, Secure, Ship) and What left show before their buttons
-# show more, and how many more "Show N more" shows at a click. Those five lists only: What moved uses SHOWN_PRACTICES,
-# History its own count.
+# show more, and how many more "Show N more" shows at a click; History shows as many rows of its grid of charts, and as many
+# more at a click. What moved uses SHOWN_PRACTICES.
 PRACTICES_FIRST = 3
 # Of the pro repos that had a practice this many snapshots ago or earlier, a year, the share that still have it today: the other
 # end of the report note on what left. A year, so that a practice is kept only where it had the time to go.
@@ -1036,6 +1071,7 @@ def span_copy(back, shown):
         "back_key": "where it was %s ago" % months(back),
         "back_ago": "%s ago" % digits,
         "back_col": digits,
+        "moves_col": "%s evolution" % digits,  # the label over What moved's figures
         "moves_intro": "%s-month change in pro adoption, in percentage points. The repos are today's at both dates, so each change "
         "is a repo adding or removing it; a repo created since the earlier date that has it today counts as adding it. The rows "
         "go from the largest rise to the largest fall." % (words(back).capitalize()),
@@ -2119,20 +2155,15 @@ READING_NAMES = {
         "scoped_instructions": {"agents_md", "claude_md"},
         "agents_md": {"claude_md"},
         "claude_md": {"agents_md"},
-        "agents_dir": {"skills"},
         "shared_settings": {"claude_md"},
-        "adr": {"skills"},
         "agent_commits": {"agent_prs"},
-        "ai_review_config": {"ai_review"},
     },
     "stay": {
         "agents_md": {"claude_md"},
         "claude_md": {"agents_md"},
         "commands": {"skills"},
         "mcp": {"skills"},
-        "hooks": {"claude_md"},
         "agent_in_ci": {"agent_commits", "agent_prs"},
-        "ai_review_config": {"ai_review"},
     },
 }
 # The practice a row's "after" names (what its leavers have today): LEFT_FOR's, and those of the lens rows
@@ -2233,23 +2264,6 @@ def readings(leagues, items, left_rows, dates, shown=None):
             % (cap(of_the(landed, len(removed))), of_the(pointing, len(added)))
         )
 
-    def skills_inside(r):
-        return any(rule == "skills" and p.startswith(".agents/") for rule, p in r["scan"]["head_paths"]) or any(
-            l["path"].startswith(".agents/skill") for l in r["scan"].get("links", [])
-        )
-
-    added, _ = moved("agents_dir")
-    with_dir = [r for r in pro if r["now"]["agents_dir"]]
-    inside = sum(1 for r in with_dir if skills_inside(r))
-    if with_dir and 2 * inside > len(with_dir):
-        move["agents_dir"] = "Mostly a home for skills: %d of the %d pro repos with one keep skills in it%s." % (
-            inside,
-            len(with_dir),
-            ", as do %s that added one" % of_the(sum(1 for r in added if skills_inside(r)), len(added))
-            if added
-            else "",
-        )
-
     # the repos that added skills in each window of three months, as moves() counts them: a repo created since counts
     gains = [
         sum(1 for r in pro if has(r["f"][i], "skills") and not has(r["f"][i - BACK], "skills"))
@@ -2273,15 +2287,6 @@ def readings(leagues, items, left_rows, dates, shown=None):
             % (cap(of_the(with_claude, len(removed))))
         )
 
-    added, _ = moved("adr")
-    with_skills = sum(1 for r in added if r["now"]["skills"])
-    base = by["skills"]["pro"]["now"]
-    if added and with_skills / len(added) > base["p"]:
-        move["adr"] = (
-            "Rising where agents are set up: %s repos that added decision records ship skills, against %d of %d across the pro scene."
-            % (of_the(with_skills, len(added)), base["k"], base["n"])
-        )
-
     _, removed = moved("agent_commits")
     prs = sum(1 for r in removed if r["now"]["agent_prs"])
     quieter = sum(
@@ -2293,15 +2298,6 @@ def readings(leagues, items, left_rows, dates, shown=None):
         move["agent_commits"] = (
             "%s that fell below %d signed commits in %d days still have agent-opened pull requests, and %d committed less overall."
             % (cap(of_the(prs, len(removed))), MIN_SIGNED_COMMITS, COMMIT_DAYS, quieter)
-        )
-
-    added, _ = moved("ai_review_config")
-    reviewed = sum(1 for r in added if r["now"]["ai_review"])
-    review_md = sum(1 for r in added if ["ai_review_config", "REVIEW.md"] in r["scan"]["head_paths"])
-    if added and 2 * reviewed > len(added):
-        move["ai_review_config"] = (
-            "Rules follow the reviewer: %s that added them have an AI reviewer today, and %d wrote them as a REVIEW.md at the root."
-            % (of_the(reviewed, len(added)), review_md)
         )
 
     # ---------- What left: since the first snapshot
@@ -2371,33 +2367,12 @@ def readings(leagues, items, left_rows, dates, shown=None):
             % (no_skills, len(out))
         )
 
-    row = gone["hooks"]
-    kept = row["left"]["n"] - row["left"]["k"]
-    out = leavers("hooks")
-    with_claude = sum(1 for r, _ in out if ever_had(r, "claude_md") and not r["now"]["claude_md"])
-    if 2 * kept > row["left"]["n"]:
-        stay["hooks"] = "Hooks run code, so keeping them is a choice: %d of the %d that had them still do%s." % (
-            kept,
-            row["left"]["n"],
-            ", and %d of the %d leavers dropped CLAUDE.md too" % (with_claude, len(out))
-            if 2 * with_claude > len(out)
-            else "",
-        )
-
     out = leavers("agent_in_ci")
     busy = sum(1 for r, _ in out if r["now"]["agent_commits"] or r["now"]["agent_prs"])
     if out and 2 * busy > len(out):
         stay["agent_in_ci"] = (
             "%s that took it out still have agents signing commits or opening pull requests; whether an AI reviewer replaced it is unknown."
             % (cap(of_the(busy, len(out))))
-        )
-
-    out = leavers("ai_review_config")
-    reviewed = sum(1 for r, _ in out if r["now"]["ai_review"])
-    if out and 2 * reviewed > len(out):
-        stay["ai_review_config"] = (
-            "The rules are the optional part: %s that removed them still have an AI reviewer on pull requests."
-            % (of_the(reviewed, len(out)))
         )
 
     out = leavers("cursor_rules")
@@ -2428,14 +2403,10 @@ def readings(leagues, items, left_rows, dates, shown=None):
 # small; row_readings() drops a reading whose row, or a practice it names beside its own (ROW_NAMES), is off the page. A row's
 # reading goes to Build's `reading` (beside the cards') or to the practice's own `reading` in the other sections (main()).
 ROW_NAMES = {
-    "compose_dev": {"env_example"},
     "agent_in_ci": {"app_token"},
-    "agent_prs": {"instructions"},
     "commands": {"skills"},
+    "adr": {"skills"},
     "multi_arch_images": {"container_images"},
-    "preview_deploys": {"deploy_cloud"},
-    "container_images": {"signed_builds"},
-    "deploy_cloud": {"container_images"},
 }
 # The outside facts three readings state, each in the source's words (read on 2026-11-24): the sentence says no more than these
 ROW_SOURCES = {
@@ -2482,10 +2453,6 @@ def _sample(r, rule):
     return h["sample"] if h["n"] > len(h["sample"]) else [p for p in h["sample"] if fp.still_valid(rule, p)]
 
 
-def _base_names(r, *rules):
-    return {p.split("/")[-1].lower() for rule in rules for p in _sample(r, rule)}
-
-
 def _ci(r, key, i=-1):
     return key in ((r["scan"]["snaps"][i] or {}).get("ops") or {}).get("ci", ())
 
@@ -2500,19 +2467,8 @@ def _lens_now(r):
     return r["g"][-1] or {}
 
 
-def _mono(r):
-    return bool(WORKSPACE & set(tip_tree(r)["root"]))
-
-
 def _lang(r):
     return LANGUAGES.get(r["language"], "Other")
-
-
-def _thirds(rows):
-    """The size third of each repo, 0 to 2, as contexts() cuts them (own_files)."""
-    sizes = sorted(own_files(r) for r in rows)
-    small, large = sizes[len(sizes) // 3], sizes[2 * len(sizes) // 3]
-    return lambda r: 0 if own_files(r) < small else 1 if own_files(r) < large else 2
 
 
 def _pair(pro, key, test):
@@ -2552,31 +2508,6 @@ def _read_mcp(pro, lad, dates):
         return long if long and len(long) <= READING_MAX else text("")
 
 
-def _read_patched_deps(pro, lad, dates):
-    rows = _with(pro, "patched_deps")
-    pnpm = [r for r in pro if ((_tip(r).get("sec") or {}).get("manager") or [None])[0] == "pnpm"]
-    mono, patched = sum(1 for r in rows if _mono(r)), sum(1 for r in pnpm if r["now"]["patched_deps"])
-    if rows and 4 * mono >= 3 * len(rows) and len(pnpm) >= MIN_BASE:
-        return (
-            "%s are monorepos. %d of the %d pro repos that name pnpm as their package manager patch a dependency."
-            % (
-                _cap(_of_the(mono, len(rows))),
-                patched,
-                len(pnpm),
-            )
-        )
-
-
-def _read_compose_dev(pro, lad, dates):
-    a, n, b, m = _pair(pro, "compose_dev", lambda r: r["now"]["env_example"])
-    if _twice(a, n, b, m):
-        return "%s also commit an example settings file, against %d of the %d repos without one." % (
-            _cap(_of_the(a, n)),
-            b,
-            m,
-        )
-
-
 def _read_agent_in_ci(pro, lad, dates):
     a, n, b, m = _pair(pro, "agent_in_ci", lambda r: r["now"]["app_token"])
     if _twice(a, n, b, m):
@@ -2586,27 +2517,6 @@ def _read_agent_in_ci(pro, lad, dates):
                 _cap(_of_the(a, n)),
                 b,
                 m,
-            )
-        )
-
-
-def _read_agent_prs(pro, lad, dates):
-    third = _thirds(pro)
-    cells = [[r for r in pro if third(r) == i] for i in range(3)]
-    if min(map(len, cells)) < MIN_BASE:
-        return None
-    prs = [sum(1 for r in c if r["now"]["agent_prs"]) / len(c) for c in cells]
-    told = [sum(1 for r in c if r["now"]["instructions"]) / len(c) for c in cells]
-    # the spread of the three as the page prints them, 10 points or less; the instruction file up 20 points or more
-    if max(map(points, prs)) - min(map(points, prs)) <= 10 and points(told[2]) - points(told[0]) >= 20:
-        return (
-            "Flat across sizes: %s, %s and %s of the three size thirds, where the instruction file goes from %s to %s."
-            % (
-                percent(prs[0]),
-                percent(prs[1]),
-                percent(prs[2]),
-                percent(told[0]),
-                percent(told[2]),
             )
         )
 
@@ -2680,55 +2590,19 @@ def _read_commands(pro, lad, dates):
 
 def _read_adr(pro, lad, dates):
     ps = [sum(1 for r in pro if has(r["f"][i], "adr")) for i in range(len(dates))]
-    ls = [sum(1 for r in lad if has(r["f"][i], "adr")) for i in range(len(dates))]
     # the snapshot before the pro scene's steepest month: where its rise starts
     j = max(range(len(ps) - 1), key=lambda i: (ps[i + 1] - ps[i], -i))
-    if ls[0] > ps[0] and ps[-1] - ps[j] >= 5:
-        return (
-            "The ladder had them first: %d ladder repos and %d pro in %s. The pro scene went from %d to %d since %s."
-            % (
-                ls[0],
-                ps[0],
-                month_name(dates[0], year=True, full=True),
-                ps[j],
-                ps[-1],
-                month_name(dates[j], year=True, full=True),
-            )
-        )
-
-
-def _read_task_runner(pro, lad, dates):
-    rows = _with(pro, "task_runner")
-    make = sum(1 for r in rows if _base_names(r, "task_runner") & {"makefile", "gnumakefile"})
-    just = sum(1 for r in rows if _base_names(r, "task_runner") & {"justfile", ".justfile"})
-    gr, js = [r for r in pro if _lang(r) == "Go or Rust"], [r for r in pro if _lang(r) == "TypeScript or JS"]
-    if rows and len(gr) >= MIN_BASE and len(js) >= MIN_BASE:
-        return (
-            "%d of the %d are a Makefile, %d a justfile. %d of the %d Go or Rust repos have one, %d of the %d in TypeScript or JS."
-            % (
-                make,
-                len(rows),
-                just,
-                sum(1 for r in gr if r["now"]["task_runner"]),
-                len(gr),
-                sum(1 for r in js if r["now"]["task_runner"]),
-                len(js),
-            )
-        )
-
-
-def _read_toolchain_pinned(pro, lad, dates):
-    rows = _with(pro, "toolchain_pinned")
-    names = lambda r: _base_names(r, "toolchain_files", "toolchain_other")
-    manager = sum(1 for r in rows if (_tip(r).get("sec") or {}).get("manager"))
-    nvm = sum(1 for r in rows if ".nvmrc" in names(r))
-    rust = sum(1 for r in rows if names(r) & {"rust-toolchain", "rust-toolchain.toml"})
-    if rows and manager > nvm:
-        return "%d of the %d set packageManager in package.json, %d keep an .nvmrc, %d a rust-toolchain file." % (
-            manager,
-            len(rows),
-            nvm,
-            rust,
+    added = [r for r in _with(pro, "adr") if not has(r["f"][j], "adr")]
+    skilled, skills = sum(1 for r in added if r["now"]["skills"]), len(_with(pro, "skills"))
+    # a rise of 5 or more, and the share of those that added them shipping skills twice the pro scene's or more
+    if ps[-1] - ps[j] >= 5 and skilled * len(pro) >= 2 * skills * len(added):
+        return "From %d pro repos in %s to %d today: %s that added them since ship skills, against %d of the %d." % (
+            ps[j],
+            month_name(dates[j], year=True, full=True),
+            ps[-1],
+            _of_the(skilled, len(added)),
+            skills,
+            len(pro),
         )
 
 
@@ -2746,22 +2620,6 @@ def _read_issue_forms(pro, lad, dates):
             len(rows),
             b,
             len(lrows),
-        )
-
-
-def _read_dev_env_declared(pro, lad, dates):
-    rows = _with(pro, "dev_env_declared")
-    nix = [sum(1 for r in pro if _hits_at(r, "nix_env", i) > 0) for i in (0, -1)]
-    container = sum(1 for r in rows if _hits_at(r, "devcontainer", -1) > 0)
-    # "nearly doubled": 1.6 times or more, and less than twice
-    if rows and nix[0] and 5 * nix[1] >= 8 * nix[0] and nix[1] < 2 * nix[0]:
-        return "%d of the %d use a dev container, %d Nix. Nix nearly doubled: %d pro repos in %s, %d today." % (
-            container,
-            len(rows),
-            nix[1],
-            nix[0],
-            month_name(dates[0], year=True, full=True),
-            nix[1],
         )
 
 
@@ -2842,21 +2700,6 @@ def _read_change_convention(pro, lad, dates):
         )
 
 
-def _read_preview_deploys(pro, lad, dates):
-    rows = _with(pro, "preview_deploys")
-    hosts = collections.Counter(h for r in rows for h in r["api"]["preview_hosts"])
-    deploy = sum(1 for r in rows if r["now"]["deploy_cloud"])
-    # Vercel's bot the most frequent. Cloudflare's, second, is not named: the page keeps the name of its own host out of
-    # its text
-    if hosts and hosts.most_common(1)[0][0] == "Vercel" and 3 * deploy < len(rows):
-        return "Vercel's bot posts in %d of the %d. Only %d of the %d deploy from a workflow too." % (
-            hosts["Vercel"],
-            len(rows),
-            deploy,
-            len(rows),
-        )
-
-
 def _read_environments(pro, lad, dates):
     py, other = [r for r in pro if _lang(r) == "Python"], [r for r in pro if _lang(r) != "Python"]
     a, b = sum(1 for r in py if r["now"]["environments"]), sum(1 for r in other if r["now"]["environments"])
@@ -2873,49 +2716,19 @@ def _read_environments(pro, lad, dates):
         )
 
 
-def _read_container_images(pro, lad, dates):
-    a, n, b, m = _pair(pro, "container_images", lambda r: _lens_now(r).get("signed_builds"))
-    if _twice(a, n, b, m):
-        return "%s sign or attest what they build, against %d of the %d that push no image." % (
-            _cap(_of_the(a, n)),
-            b,
-            m,
-        )
-
-
-def _read_deploy_cloud(pro, lad, dates):
-    a, n, b, m = _pair(pro, "deploy_cloud", lambda r: r["now"]["container_images"])
-    # a base of 20 or more, and the share 1.5 times the others' or more
-    if n >= MIN_BASE and m and 2 * a * m >= 3 * b * n:
-        return "%s also push container images, against %d of the %d that deploy nothing from CI." % (
-            _cap(_of_the(a, n)),
-            b,
-            m,
-        )
-
-
 ROW_READS = {
     "mcp": _read_mcp,
-    "patched_deps": _read_patched_deps,
-    "compose_dev": _read_compose_dev,
     "agent_in_ci": _read_agent_in_ci,
-    "agent_prs": _read_agent_prs,
     "stale_bot": _read_stale_bot,
     "hooks": _read_hooks,
     "agent_commits": _read_agent_commits,
     "commands": _read_commands,
     "adr": _read_adr,
-    "task_runner": _read_task_runner,
-    "toolchain_pinned": _read_toolchain_pinned,
     "issue_forms": _read_issue_forms,
-    "dev_env_declared": _read_dev_env_declared,
     "docs_site": _read_docs_site,
     "multi_arch_images": _read_multi_arch_images,
     "change_convention": _read_change_convention,
-    "preview_deploys": _read_preview_deploys,
     "environments": _read_environments,
-    "container_images": _read_container_images,
-    "deploy_cloud": _read_deploy_cloud,
 }
 
 
@@ -3023,12 +2836,6 @@ def copy(leagues, items, info, models, ctx, left_rows, jobs, dates, shown=None):
     owners = len({r["name"].split("/")[0] for r in pro})
     of = lambda x: "%d of %d" % (x["k"], x["n"])
     month_long = lambda iso: AS_OF.replace(year=int(iso[:4]), month=int(iso[5:7]), day=1).strftime("%B %Y")
-    # the three practices removed most often: the first three of What left
-    rows_by = {row["id"]: row for row in left_rows}
-    out_most = [rows_by[key] for key in left_lists(left_rows)["left"][:3]]
-    # and the first two kept, the other end of the note: kept by the pro repos that had them a year ago. Not the rows taken out
-    # least: that is What left read backwards, which puts on top what most repos added this year
-    kept_most = [rows_by[key] for key in kept_first(left_rows)[:2]]
     skills_pro = by["skills"]["pro"]
     no_skill = max(i for i, p in enumerate(skills_pro["series"]) if p == 0)
     # the ladder's repos with skills BACK snapshots ago: today's less those that added them, plus those that removed them
@@ -3106,33 +2913,6 @@ def copy(leagues, items, info, models, ctx, left_rows, jobs, dates, shown=None):
                     ],
                 },
                 list(AT_WORK),
-            ],
-            [
-                "Instructions are consolidating on AGENTS.md",
-                # the moves that make it a consolidation: "14 removed CLAUDE.md, 13 added one" alone would read as a
-                # wash (the run of 2026-11-22); the headline holds only while the moves say so
-                "In %s %d pro repos added AGENTS.md and %s removed it, while CLAUDE.md went from %d to %d. AGENTS.md is in %s of the "
-                "pro scene, CLAUDE.md in %s."
-                % (
-                    months(BACK),
-                    by["agents_md"]["pro"]["moves"]["gained"],
-                    by["agents_md"]["pro"]["moves"]["lost"] or "none",
-                    by["claude_md"]["pro"]["now"]["k"]
-                    - by["claude_md"]["pro"]["moves"]["gained"]
-                    + by["claude_md"]["pro"]["moves"]["lost"],
-                    by["claude_md"]["pro"]["now"]["k"],
-                    pc(by["agents_md"]["pro"]["now"]),
-                    pc(by["claude_md"]["pro"]["now"]),
-                ),
-                "h-moves",
-                {
-                    "form": "trend",
-                    "title": "Share of the pro scene by month",
-                    "lines": [
-                        {"item": k, "league": "pro", "label": by[k]["label"]} for k in ("agents_md", "claude_md")
-                    ],
-                },
-                ["claude_md", "agents_md"],
             ],
             # written only while the instruction file is ahead today; the month from which it has been ahead at every snapshot
             *(
@@ -3233,33 +3013,6 @@ def copy(leagues, items, info, models, ctx, left_rows, jobs, dates, shown=None):
                     ],
                 },
                 ["skills", "ai_review"] + (["e2e_browser"] if on("e2e_browser") else []),
-            ],
-            [
-                "Taken out most often: %s" % ", ".join(row["label"] for row in out_most),
-                "Pro repos that removed it, of those that had it: %s. "
-                "At the other end, pro repos that had it a year ago and still have it: %s."
-                % (
-                    ", ".join("%s %s" % (row["label"], of(row["left"])) for row in out_most),
-                    ", ".join("%s %s" % (row["label"], of(row["stayed"])) for row in kept_most),
-                ),
-                "h-left",
-                {
-                    "form": "bars",
-                    "title": "Pro repos that removed it, of those that had it",
-                    "value": "of",
-                    # the three taken out most often alone: the other end is another measure, the share kept, over another base
-                    "groups": [
-                        [
-                            {
-                                "label": LENS_CHART_NAME.get(row["id"], row["label"]),
-                                "id": row["id"],
-                                "cells": [dict(share(row["left"]), league="pro")],
-                            }
-                            for row in out_most
-                        ]
-                    ],
-                },
-                [row["id"] for row in out_most + kept_most],
             ],
         ],
         "pro": "%d public repos from %d organisations: every repo the ROSS Index has named since %s that passes %s both "
@@ -4184,11 +3937,17 @@ def lens_block_readings(pro, by, rows):
             of_the(scanner, len(rows_in))
         )
 
+    # what replaced ESLint: Oxlint for more than half of those that took it out, twice Biome's count or more; Prettier said
+    # while more than half took it out too
     out = leavers("eslint")
-    linted = sum(1 for r in out if r["now"]["ci_lint"])
-    if out and 4 * linted >= 3 * len(out):
-        stay["eslint"] = "The tool changed, the check stayed: %s still run a linter or a formatter in CI." % of_the(
-            linted, len(out)
+    oxlint, biome = (sum(1 for r in out if r["now"]["tool"][t]) for t in ("oxlint", "biome"))
+    prettier = sum(1 for r in out if any(f and f["prettier"] for f in r["f"]) and not r["now"]["prettier"])
+    if out and 2 * oxlint > len(out) and oxlint >= 2 * biome:
+        stay["eslint"] = "Most went to Oxlint: %d of the %d run it today, %d Biome%s." % (
+            oxlint,
+            len(out),
+            biome,
+            "; %d took Prettier out as well" % prettier if 2 * prettier > len(out) else "",
         )
 
     shown = {row["id"]: in_left(row) for row in rows}
@@ -4248,14 +4007,6 @@ def lens_readings(pro, by, gone, dates):
             % cap(of_the(in_ci, len(silent)))
         )
 
-    rows = have("checks_ext")
-    told = among(rows, lambda f: f["says_tests"])
-    if rows and 2 * told > len(rows):
-        out["checks_ext"] = (
-            "%s also name the test command in their instructions: the skill comes on top of the instruction."
-            % cap(of_the(told, len(rows)))
-        )
-
     rows = have("hook_checks")
     told = among(rows, lambda f: f["says_tests"])
     heavy = among(rows, lambda f: bool({"tests", "types"} & f["hook_runs"]))
@@ -4274,21 +4025,6 @@ def lens_readings(pro, by, gone, dates):
             % (cap(of_the(beside, len(rows))), switched["switched"], switched["left"]["k"])
         )
 
-    rows = have("knip")
-    fast = among(rows, lambda f: f["fast_lint"])
-    if rows and 2 * fast > len(rows):
-        out["knip"] = "%s also run Oxlint, Oxfmt or Biome: the two arrive in the same repos." % cap(
-            of_the(fast, len(rows))
-        )
-
-    gain = {k: by[k]["pro"]["now"]["k"] - by[k]["pro"]["first"]["k"] for k in ("ci_tests", "ci_lint", "ci_types")}
-    if gain["ci_types"] > max(gain["ci_tests"], gain["ci_lint"]):
-        out["ci_types"] = "The old habit that moved most: %d pro repos in %s, %d today." % (
-            by["ci_types"]["pro"]["first"]["k"],
-            month(0),
-            by["ci_types"]["pro"]["now"]["k"],
-        )
-
     # ---------- security
     rows = have("cooldown")
     spring = wave("cooldown", "2026-04", "2026-06")
@@ -4304,13 +4040,6 @@ def lens_readings(pro, by, gone, dates):
         out["pinned"] = (
             "%s began between mid-March and mid-June 2026, the weeks of the Trivy and TanStack compromises."
             % (cap(of_the(late, len(rows))))
-        )
-
-    rows = have("zizmor")
-    pins = among(rows, lambda f: f["pinned"])
-    if rows and 2 * pins > len(rows):
-        out["zizmor"] = "%s also pin their actions to a commit: the audit and the pinning go together." % cap(
-            of_the(pins, len(rows))
         )
 
     agents = have("agent_in_ci")
@@ -4349,13 +4078,6 @@ def lens_readings(pro, by, gone, dates):
             denied,
         )
 
-    spoken, tests = by["says_security"]["pro"]["now"]["k"], by["says_tests"]["pro"]["now"]["k"]
-    if tests >= 2 * spoken:
-        out["says_security"] = "%d pro repos speak of security in their instructions; %d name a test command." % (
-            spoken,
-            tests,
-        )
-
     rows = have("threat_model")
     scanner = sum(1 for r in rows if count("oss_scanner", tip_tree(r)["hits"].get("oss_scanner")) > 0)
     since = min((first(r, "threat_model") for r in rows), default=0)
@@ -4371,10 +4093,6 @@ def lens_readings(pro, by, gone, dates):
 
 # The readings of the rows of Test and Secure. Each reads row_facts(), what one repo of a lens view gives them, so that
 # the unit tests can hand them made-up repos.
-# A git hooks path of pre-commit: its config, or prek's, which runs the same hooks
-PRE_COMMIT = (".pre-commit-config", "prek.toml")
-# The tool a lint rule of a repo's own is written for, by a word of its path, the first that matches
-LINT_RULE_TOOLS = ("grit", "oxlint", "eslint", "semgrep")
 # The day of an event of Secure's timeline (LENS_EVENTS, which gives its month) where a reading counts the days to it: the GitHub
 # advisory GHSA-69fq-xp46-6x23, read on 2026-11-24, "On March 19, 2026, a threat actor used compromised credentials to publish a
 # malicious Trivy v0.69.4 release, force-push 76 of 77 version tags in aquasecurity/trivy-action [...]"
@@ -4382,19 +4100,17 @@ EVENT_DAYS = {"trivy-action tags hijacked": "2026-03-19"}
 
 
 def row_facts(r):
-    """What the readings of Test and Secure read of one repo of a lens view (lens_view): its main language and its size, its lens
-    answers today, the answers of features() today for the practices read as Build's are, the API's reviewers and security bots
-    and its security block as read (rule types, protected, counts: no person), four path rules and two lens answers at every
-    snapshot, the paths kept today of three rules, and the token and supply fields of the last snapshot."""
+    """What the readings of Test and Secure read of one repo of a lens view (lens_view): its lens answers today, whether
+    features() finds a review config today, the API's reviewers and security bots and its security block as read (rule types,
+    protected, counts: no person), four path rules and Trivy at every snapshot, the paths kept today of the review configs, and
+    the token field of the last snapshot."""
     sec = r["scan"]["snaps"][-1].get("sec") or {}
     hits = tip_tree(r)["hits"]
     kept = lambda rule: [p for p in (hits.get(rule) or {"sample": []})["sample"] if fp.still_valid(rule, p)]
     base = features(r["scan"], -1) or {}
     return {
-        "language": LANGUAGES.get(r["language"], "Other"),
-        "files": own_files(r),
         "now": r["now"],
-        "base": {key: bool(base.get(key)) for key in ("ai_review_config", "ci_multi_os", "container_images")},
+        "base": {"ai_review_config": bool(base.get("ai_review_config"))},
         "ai_review": r["api"]["ai_review"],
         "security_bots": r["api"]["security_bots"],
         "security": r["api"].get("security") or {},
@@ -4403,10 +4119,8 @@ def row_facts(r):
             for rule in ("cypress", "playwright", "dependabot", "renovate")
         },
         "trivy": [bool(f and "trivy" in f["scanners"]) for f in r["f"]],
-        "fuzz": [has(f, "fuzz_tests") for f in r["f"]],
-        "paths": {rule: kept(rule) for rule in ("git_hooks", "custom_lint", "ai_review_config")},
+        "paths": {"ai_review_config": kept("ai_review_config")},
         "token": sec.get("token") or [0, 0],
-        "supply": set(sec.get("supply") or []),
     }
 
 
@@ -4415,7 +4129,6 @@ def checks_readings(pro, by, shown, dates):
     fact it rests on holds and the practices it names are on the page."""
     of_the = lambda k, n: "all %d" % n if k == n else "%d of the %d" % (k, n)
     cap = lambda text: text[0].upper() + text[1:]
-    month = lambda i: month_name(dates[i], year=True, full=True)
     out = {}
 
     # Browser end-to-end tests: those that took Cypress out, and what they run today
@@ -4446,71 +4159,16 @@ def checks_readings(pro, by, shown, dates):
             "%s repos an AI reviewer comments on commit a review config; %s configs are CodeRabbit's."
             % (cap(of_the(both, len(reviewed))), of_the(rabbit, len(configs)))
         )
-
-    # Git hooks, by main language: the gap holds in every size third (checked on the run of 2026-11-24)
-    lang = lambda name: [f for f in pro if f["language"] == name]
-    py, go = lang("Python"), lang("Go or Rust")
-    hooked = lambda rows: sum(1 for f in rows if f["now"]["git_hooks"])
-    pre = sum(
-        1 for f in py if f["now"]["git_hooks"] and any(x in p for p in f["paths"]["git_hooks"] for x in PRE_COMMIT)
-    )
-    if min(len(py), len(go)) >= MIN_BASE and hooked(py) * len(go) > 2 * hooked(go) * len(py):
-        out["git_hooks"] = "%s Python repos have them, %d through pre-commit; %s in Go or Rust." % (
-            cap(of_the(hooked(py), len(py))),
-            pre,
-            of_the(hooked(go), len(go)),
-        )
-
-    # CI on Windows or macOS, by main language (the pro scene's: the ladder does not show the gap)
-    compiled, web = [f for f in pro if f["language"] in ("Go or Rust", "Python")], lang("TypeScript or JS")
-    a, b = (sum(1 for f in rows if f["base"]["ci_multi_os"]) for rows in (compiled, web))
-    if min(len(compiled), len(web)) >= MIN_BASE and 2 * a * len(web) >= 3 * b * len(compiled):
-        out["ci_multi_os"] = (
-            "%s Go, Rust and Python repos run jobs on Windows or macOS, against %s in TypeScript or JS."
-            % (
-                cap(of_the(a, len(compiled))),
-                of_the(b, len(web)),
-            )
-        )
-
-    # Service containers in CI: a year or more within 3 repos from the first snapshot, then a rise of 10 or more
-    item = by["ci_services"]["pro"]
-    counts = [round(p * item["now"]["n"]) for p in item["series"]]
-    flat = max(i for i in range(len(counts)) if max(counts[: i + 1]) - min(counts[: i + 1]) <= 3)
-    if flat >= 12 and counts[-1] - counts[flat] >= 10:
-        out["ci_services"] = "%d to %d pro repos from %s to %s, %d today." % (
-            min(counts[: flat + 1]),
-            max(counts[: flat + 1]),
-            month(0),
-            month(flat),
-            counts[-1],
-        )
-
-    # Lint rules of their own: the tool each repo writes them for (a repo can write for several), and their size, said as size
-    rows = [f for f in pro if f["now"]["custom_lint"]]
-    tools = collections.Counter()
-    for f in rows:
-        tools.update({next((t for t in LINT_RULE_TOOLS if t in p.lower()), "other") for p in f["paths"]["custom_lint"]})
-    sizes = sorted(f["files"] for f in pro)
-    small = sum(1 for f in rows if f["files"] < sizes[len(sizes) // 3])  # the Small third of By context (contexts())
-    if rows and tools["eslint"] > max(tools[t] for t in LINT_RULE_TOOLS if t != "eslint"):
-        out["custom_lint"] = "%s write ESLint rules, %d Oxlint plugins and %d GritQL patterns%s." % (
-            cap(of_the(tools["eslint"], len(rows))),
-            tools["oxlint"],
-            tools["grit"],
-            "" if small else "; none sits in the smallest third by size",
-        )
     return out
 
 
 def security_readings(facts, by, shown, dates):
-    """The Insight of rows of Secure, by id, over the row_facts() of both leagues, under the rules of readings(). The three practices
-    read in GitHub's API today only (Pull request required, Private vulnerability reporting, Default branch protected) and the
-    comments of code scanning have no history: their readings say no "when"."""
+    """The Insight of rows of Secure, by id, over the row_facts() of both leagues, under the rules of readings(). The practices
+    read in GitHub's API today only (Pull request required, Default branch protected) and the comments of code scanning have no
+    history: their readings say no "when"."""
     pro, ladder = facts["pro"], facts["ladder"]
     of_the = lambda k, n: "all %d" % n if k == n else "%d of the %d" % (k, n)
     cap = lambda text: text[0].upper() + text[1:]
-    month = lambda i, year=True: month_name(dates[i], year=year, full=True)
     split = lambda key: ([f for f in pro if f["now"][key]], [f for f in pro if not f["now"][key]])
     out = {}
 
@@ -4551,16 +4209,6 @@ def security_readings(facts, by, shown, dates):
             "; in %d a rule asks Copilot to review" % copilot if copilot else "",
         )
 
-    # Private vulnerability reporting: the repos that have published an advisory, with it on and off (partly mechanical: a
-    # private report can become an advisory, so the sentence pairs the two and says no more)
-    on, off = split("private_reporting")
-    published = lambda part: sum(1 for f in part if (f["security"].get("advisories") or 0) > 0)
-    if on and off and 2 * published(on) * len(off) > 3 * published(off) * len(on):
-        out["private_reporting"] = "%s with it on have published a security advisory, against %s with it off." % (
-            cap(of_the(published(on), len(on))),
-            of_the(published(off), len(off)),
-        )
-
     # Code scanning in CI: GitHub's code scanning comments in repos with no scanner in a workflow (default setup needs no
     # workflow file: GitHub's docs, "Setup types for code scanning", read on 2026-11-24)
     bot = dict(SECURITY_BOTS)["github-advanced-security"]
@@ -4571,13 +4219,17 @@ def security_readings(facts, by, shown, dates):
             % (quiet, bot)
         )
 
-    # Workflow tokens scoped: the share of its workflows a repo scopes the token in, the median over the repos with workflows
-    shares = [ok / n for n, ok in (f["token"] for f in pro) if n]
-    none = sum(1 for x in shares if x == 0)
-    if len(shares) >= MIN_BASE and statistics.median(shares) >= 0.5:
-        out["token_scoped"] = "The median pro repo scopes it in %s of its workflows%s." % (
-            percent(statistics.median(shares)),
-            "; %s with workflows scope it in none" % of_the(none, len(shares)) if none else "",
+    # Workflow tokens scoped: the share of its workflows a repo scopes the token in, over the repos with workflows. The row
+    # counts a repo at COMPLIANT_SHARE or more (features()); said while more than half scope it in some and fewer than that,
+    # so that the median falls between the two
+    pairs = [(n, ok) for n, ok in (f["token"] for f in pro) if n]
+    shares = [ok / n for n, ok in pairs]
+    none = sum(1 for _, ok in pairs if not ok)
+    part = sum(1 for n, ok in pairs if ok and ok < COMPLIANT_SHARE * n)
+    if len(shares) >= MIN_BASE and 2 * part > len(shares):
+        out["token_scoped"] = (
+            "Most do it in part: the median pro repo scopes it in %s of its workflows, short of the %s this row asks; %s in none."
+            % (percent(statistics.median(shares)), percent(COMPLIANT_SHARE), of_the(none, len(shares)))
         )
 
     # Default branch protected: by an active ruleset (the API's rules of the branch) or protected with none ("protected", which
@@ -4596,20 +4248,8 @@ def security_readings(facts, by, shown, dates):
             "; on the ladder, %d and %d" % (l_ruleset, l_other) if l_ruleset < l_other else "",
         )
 
-    # Secret scanning in CI or config: in a git hook, before the commit, or in CI (a scanner or a scanning step)
-    rows = split("secret_scan_ci")[0]
-    hook = lambda f: "secrets" in f["now"]["git_runs"]
-    ci = lambda f: bool(f["now"]["scanners"] & set(fp.SCANNER_JOBS["secrets"])) or "secrets" in f["supply"]
-    both = sum(1 for f in rows if hook(f) and ci(f))
-    hooked = sum(1 for f in rows if hook(f))
-    if "git_hooks" in shown and rows and 5 * hooked >= 2 * len(rows):
-        out["secret_scan_ci"] = "%s scan in a git hook, before the commit, and %d in CI; %s." % (
-            cap(of_the(hooked, len(rows))),
-            sum(1 for f in rows if ci(f)),
-            "none does both" if not both else "one repo does both" if both == 1 else "%d do both" % both,
-        )
-
-    # Dependency audit in CI: Trivy at the last snapshot before its action's tags were hijacked, and today. A date, no cause
+    # Dependency audit in CI: Trivy at the last snapshot before its action's tags were hijacked, and today, with those of then
+    # that still run it. A date, no cause
     label = "trivy-action tags hijacked"
     event = next((m for m, where, name, _ in LENS_EVENTS if name == label), None)
     day = EVENT_DAYS[label]
@@ -4617,42 +4257,22 @@ def security_readings(facts, by, shown, dates):
     if event == day[:7] and before:
         i = before[-1]
         trivy = lambda k: sum(1 for f in pro if f["trivy"][k])
+        kept = sum(1 for f in pro if f["trivy"][i] and f["trivy"][-1])
         gap = (dt.date.fromisoformat(day) - dt.date.fromisoformat(dates[i])).days
         rows = split("dep_audit_ci")[0]
         if trivy(-1) > trivy(i):
-            out["dep_audit_ci"] = "%s run %s; %d did on %s, %s day%s before its action's tags were hijacked." % (
-                cap(of_the(trivy(-1), len(rows))),
-                SCANNER_NAMES["trivy"],
-                trivy(i),
-                long_day(dates[i]),
-                words(gap),
-                "" if gap == 1 else "s",
+            out["dep_audit_ci"] = (
+                "%s run %s; %d did on %s, %s day%s before its action's tags were hijacked; %s still do."
+                % (
+                    cap(of_the(trivy(-1), len(rows))),
+                    SCANNER_NAMES["trivy"],
+                    trivy(i),
+                    long_day(dates[i]),
+                    words(gap),
+                    "" if gap == 1 else "s",
+                    of_the(kept, trivy(i)),
+                )
             )
-
-    # SBOM: the repos that publish container images (Ship)
-    rows, rest = split("sbom")
-    a, b = (sum(1 for f in part if f["base"]["container_images"]) for part in (rows, rest))
-    if "container_images" in shown and rows and rest and 2 * a * len(rest) > 3 * b * len(rows):
-        out["sbom"] = "%s publish container images, against %d of the other %d." % (
-            cap(of_the(a, len(rows))),
-            b,
-            len(rest),
-        )
-
-    # Fuzz tests: the step at the end of the series (the snapshots from which the count rose at every one), and the repos that
-    # first show them after it began
-    counts = [sum(1 for f in pro if f["fuzz"][i]) for i in range(len(dates))]
-    start = min(i for i in range(len(counts)) if all(counts[k] < counts[k + 1] for k in range(i, len(counts) - 1)))
-    rows = [f for f in pro if f["fuzz"][-1]]
-    late = sum(1 for f in rows if not any(f["fuzz"][: start + 1]))
-    if len(counts) - 1 - start >= BACK and 2 * late > len(rows):
-        out["fuzz_tests"] = "%d pro repos had them in %s, %d today: %s first appear after mid-%s." % (
-            counts[start],
-            month(start),
-            counts[-1],
-            of_the(late, len(rows)),
-            month(start, year=False),
-        )
     return out
 
 
@@ -4715,26 +4335,47 @@ def lens(views, by, shown, rows, cards, dates):
     )
     cell = lambda x: {"k": x["k"], "n": x["n"], "p": x["p"], "league": "pro"}
     ship = of_field("ship")
-    # the most common practices of Ship in the pro scene, three at most, the ladder's count then the name for a tie
-    ship_top = sorted(ship, key=lambda i: (-i["pro"]["now"]["k"], -i["ladder"]["now"]["k"], i["label"]))[:3]
-    ship_today = [i["label"] for i in ship if not i["history"]]
+
+    # Ship's intro from its practices: the most common in the pro scene, three at most (the ladder's count then the name for a
+    # tie), the kinds, and what is read today only
+    def ship_line(of):
+        top = sorted(of, key=lambda i: (-i["pro"]["now"]["k"], -i["ladder"]["now"]["k"], i["label"]))[:3]
+        today = [i["label"] for i in of if not i["history"]]
+        return (
+            (
+                "%s: %s of %d pro repos. "
+                % (
+                    "Most common in the pro scene" if len(top) > 1 else "In the pro scene",
+                    and_join(["%s in %d" % (i["label"], i["pro"]["now"]["k"]) for i in top]),
+                    top[0]["pro"]["now"]["n"],
+                )
+                if top
+                else ""
+            )
+            + kinds_line(of)
+            + (" Read today only, in GitHub's API: %s." % and_join(today) if today else "")
+        )
+
+    test_files = (
+        " In the median repo, test files went from %s to %s of the code files in the pro scene since %s, and from %s to %s "
+        "on the ladder."
+        % (
+            pct(tests["pro"]["first"]),
+            pct(tests["pro"]["now"]),
+            then,
+            pct(tests["ladder"]["first"]),
+            pct(tests["ladder"]["now"]),
+        )
+    )
     sections = [
         {
             "id": "checks",
             "label": LENSES[0][1],
             "about": LENSES[0][2],
             # written from the section's own practices, whichever they are, so that it still holds when one leaves the
-            # page; then the share of test files in the median repo of each league, which is not a count of practices
-            "intro": counts_line(of_field("checks"), then)
-            + " In the median repo, test files went from %s to %s of the code files in the pro scene since %s, and from %s to %s "
-            "on the ladder."
-            % (
-                pct(tests["pro"]["first"]),
-                pct(tests["pro"]["now"]),
-                then,
-                pct(tests["ladder"]["first"]),
-                pct(tests["ladder"]["now"]),
-            ),
+            # page; then the share of test files in the median repo of each league, which is not a count of practices. Twice:
+            # the Basics apart, and with them (basics_intros)
+            **basics_intros(of_field("checks"), lambda of: counts_line(of, then) + test_files),
             "shift": {
                 "title": "Lint and format tools, %s to today" % then,
                 "note": "A config file in the repo, or the tool in the root package.json.",
@@ -4769,7 +4410,7 @@ def lens(views, by, shown, rows, cards, dates):
             "label": LENSES[1][1],
             "about": LENSES[1][2],
             # written from the section's own practices, as Test's
-            "intro": counts_line(of_field("security"), then),
+            **basics_intros(of_field("security"), lambda of: counts_line(of, then)),
             "evidence": [
                 ev(
                     "observed",
@@ -4803,20 +4444,8 @@ def lens(views, by, shown, rows, cards, dates):
             "id": "ship",
             "label": LENSES[2][1],
             "about": LENSES[2][2],
-            # written from the section's own practices, whichever they are: the three most common in the pro scene, the kinds, and
-            # what is read today only
-            "intro": (
-                "%s: %s of %d pro repos. "
-                % (
-                    "Most common in the pro scene" if len(ship_top) > 1 else "In the pro scene",
-                    and_join(["%s in %d" % (i["label"], i["pro"]["now"]["k"]) for i in ship_top]),
-                    ship_top[0]["pro"]["now"]["n"],
-                )
-                if ship_top
-                else ""
-            )
-            + kinds_line(ship)
-            + (" Read today only, in GitHub's API: %s." % and_join(ship_today) if ship_today else ""),
+            # written from the section's own practices, whichever they are (ship_line)
+            **basics_intros(ship, ship_line),
             "evidence": [],
             # what a deploy deploys: the workflows deploy the product, previews, docs and test setups alike, and the
             # scan cannot tell them apart
@@ -4949,6 +4578,8 @@ def lens(views, by, shown, rows, cards, dates):
                 ],
             },
             ["pinned", "cooldown"],
+            # one of the issue's lead insights (lead_notes), with what a reader decides, the dated events and the lines
+            {"lead": "pinned"},
         ],
         [
             "Oxlint, Oxfmt or Biome: from %d to %d pro repos" % (k("fast_lint", "first"), k("fast_lint")),
@@ -5072,6 +4703,8 @@ def lens(views, by, shown, rows, cards, dates):
     ]
     return {"sections": sections}, {
         "notes": notes,
+        # the agent in CI, for the lead insight on it: the pro repos that run one, and those where anyone can trigger it
+        "fence": {"agents": len(agents), "anyone": anyone},
         # the rows of What left of ESLint and Prettier: tools, not practices, ranked beside them
         "left": list(gone.values()),
         # at the end of the note of What left
@@ -5135,12 +4768,13 @@ def block_text(b):
     )
 
 
-def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone):
+def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone, basics):
     """The Method tab, for a human reader (short text, bullets, small tables, the long lists in a closed disclosure):
     its summary first, [term, text] pairs, then the blocks of each section of METHOD_SECTIONS. One subject per block,
     each said once, and nothing of when or how the page was made beyond what a reader needs to judge a figure. `items`
     and `lens_items` are the practices on the page, Build's and the other sections'; `candidates` every candidate
-    counted, by id; `gone` the candidates not shown (under_bar). Returns (summary, {section: [block]})."""
+    counted, by id; `gone` the candidates not shown (under_bar); `basics` the Basics (basics_section). Returns (summary,
+    {section: [block]})."""
     pro, ladder = leagues["pro"], leagues["ladder"]
     month_year = lambda iso: AS_OF.replace(year=int(iso[:4]), month=int(iso[5:7]), day=1).strftime("%B %Y")
     of = lambda x: "%d of %d" % (x["k"], x["n"])
@@ -5651,6 +5285,19 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone)
                 "subtract to it.",
                 items=["A change of less than a point between two different counts reads <1 pt."],
             ),
+            # the rule of the Basics, from its two numbers and its reference snapshot (basics_section)
+            block(
+                "Basics",
+                "A practice not specific to AI that %s of the pro scene or more already had %d months before the last "
+                "snapshot is a Basic. Each field's list leaves the Basics out and ranks the others; they have their own "
+                "list, last in Practices." % (share_words(basics["share"]), basics["months"]),
+                items=[
+                    "The reference moves with each run: for this issue, %s."
+                    % month_name(basics["ref"], year=True, full=True),
+                    "A practice read today only, with no monthly history, is judged on today's share.",
+                    "What moved and What left keep them: a Basic that moves is still news.",
+                ],
+            ),
             block(
                 "What left",
                 "A practice present at an earlier monthly snapshot and absent today.",
@@ -5827,6 +5474,259 @@ def guard_note(leagues, views, by, order):
             guards,
         ]
     ]
+
+
+# The issue's lead insights: the few that open Report notes, chosen so that a reader who sets up a repo would change a
+# decision on reading one. Each is a card with what to do, in sentences that open on a verb, then resources taken from the
+# pro repos (code, example files, a prompt) and its evidence. The other insights are computed and kept (copy.later), off
+# the page.
+# What to do: what the pro repos did, in the imperative, never that it works or is best (adoption is not proof that a
+# practice works).
+LEAD_CALLS = {
+    "one_file": "Write your agents' instructions once, in an AGENTS.md at the root, and point each tool's own file to it.",
+    "agent_ci": "Start with an AI reviewer on pull requests. Limit any agent you run in CI to a list of tools, and let only "
+    "the repo's members trigger it.",
+    "pinned": "Pin each third-party action to a full commit SHA, with its version in a comment. Set a release cooldown in "
+    "your dependency bot or your package manager.",
+}
+# The label of that line on the page and in the issue as text
+LEAD_CALL_LABEL = "What to do"
+# The published studies a lead insight cites (STUDIES), as the outside evidence of the sections quotes them, and the dated
+# events (LENS_EVENTS, by label)
+LEAD_STUDIES = {"one_file": ("context_bench",), "agent_ci": ("review_agents", "review_practice")}
+LEAD_EVENTS = {
+    "pinned": ("trivy-action tags hijacked", "TanStack packages compromised", "Dependabot waits three days by default")
+}
+# A lead insight on a practice taken out is written while this share or more of the pro repos that had it took it out
+LEAD_LEFT = 0.25
+# The resources: excerpts of files in pro repos and links to example files, read through GitHub's API at the commit of the
+# last snapshot, each by a rule written beside it, into data/resources.json, which holds the rules too (a step of the site's
+# own pipeline, outside the method: without the file, as in the method's public repo, the leads have none).
+# What each is, in our words, and the prompts, ours too, with no figure in them. The cooldown is shown for the tools the
+# most pro repos set it in, LEAD_LINES at most, each with its count (the lens list cooldown_in).
+RESOURCES = DATA / "resources.json"
+LEAD_RES = {
+    "pointer": "A CLAUDE.md that only points to AGENTS.md",
+    "agents_md": "AGENTS.md files of pro repos whose CLAUDE.md points to them",
+    "trigger": "Who can trigger the agent",
+    "tools": "The tools the agent may use",
+    "pin": "An action pinned to a commit, with its version in a comment",
+    "cooldown": "%s, in %d of the %d pro repos that set a cooldown",
+}
+LEAD_PROMPT_LABEL = "A prompt for your agent"
+LEAD_PROMPTS = {
+    "one_file": "Find every instruction file for coding agents in this repo (CLAUDE.md, GEMINI.md, .cursor/rules/, "
+    ".github/copilot-instructions.md and the like). Merge what they say into one AGENTS.md at the root: each rule once, "
+    "nothing the code contradicts, and what only one tool needs under a heading of its own. Then reduce each tool's file to "
+    "a pointer to AGENTS.md. Show me the diff before you delete anything.",
+    "agent_ci": "List the workflows in .github/workflows that run a coding agent. For each, say which tools the agent may "
+    "use and who can trigger it: the events, and any check of the author's association. Propose the smallest change that "
+    "limits the tools to what the job needs and lets only the repo's members trigger it. Change nothing before I approve.",
+    "pinned": "In every workflow in .github/workflows, replace the tag or branch of each third-party action with the full "
+    "commit SHA it points to today, and keep the tag in a comment after it. Look each SHA up through the GitHub API, never "
+    "guess one. Then list the files where this repo installs its dependencies, and say where a release cooldown can be set.",
+}
+LEAD_LINES = 3
+
+
+def permalink(e):
+    """A link to an excerpt or a file on GitHub, at the commit it was read at, with its lines when it is an excerpt."""
+    lines = "" if "from" not in e else "#L%d" % e["from"] + ("-L%d" % e["to"] if e["to"] > e["from"] else "")
+    return "https://github.com/%s/blob/%s/%s%s" % (e["repo"], e["sha"], urllib.parse.quote(e["path"]), lines)
+
+
+def read_resources(pro):
+    """data/resources.json, each excerpt and file kept while it was read at the commit of its repo's last snapshot (a later
+    scan may have moved past it); nothing without the file."""
+    if not RESOURCES.exists():
+        return {"agents_md": [], "cooldown": {}}
+    shas = {r["name"]: r["scan"]["snaps"][-1]["sha"] for r in pro}
+    fresh = lambda e: bool(e) and shas.get(e["repo"]) == e["sha"]
+    res = read_json(RESOURCES)
+    ci = res.get("agent_ci") or {}
+    return {
+        "pointer": res.get("pointer") if fresh(res.get("pointer")) else None,
+        "agents_md": [e for e in res.get("agents_md") or [] if fresh(e)],
+        "agent_ci": ci if ci and all(fresh(e) for e in ci.values()) else None,
+        "pin": res.get("pin") if fresh(res.get("pin")) else None,
+        "cooldown": {k: e for k, e in (res.get("cooldown") or {}).items() if fresh(e)},
+    }
+
+
+def code_res(label, e):
+    """An excerpt as a lead shows it: what it is, where it is read, its link at the commit, its lines."""
+    return {
+        "kind": "code",
+        "label": label,
+        "repo": e["repo"],
+        "path": e["path"],
+        "url": permalink(e),
+        "code": e["code"],
+    }
+
+
+def prompt_res(key):
+    return {"kind": "prompt", "label": LEAD_PROMPT_LABEL, "code": LEAD_PROMPTS[key]}
+
+
+def lead_notes(notes, leagues, by, left_rows, lenses, more, studies, dates):
+    """The issue's notes split in two: the lead insights, then the others ([headline, sentence, section id, chart, about]
+    each), where a lead's `about` holds "lead": what to do ("call"), its resources (excerpts of pro repos' files, example
+    files, a prompt), its evidence (ours, observed, then the studies) and the dated events. Each lead is written only while
+    its figures say what its headline says."""
+    pro = leagues["pro"]
+    rows = {row["id"]: row for row in left_rows}
+    of_the = lambda k, n: "all %d" % n if k == n else "%d of the %d" % (k, n)
+    cap = lambda text: text[0].upper() + text[1:]
+    took = lambda row: row and "after" in row and row["left"]["k"] >= SHOWN_MOVE
+    by_url = {e["src"]["url"]: e for e in studies if e.get("src")}
+    res = read_resources(pro)
+
+    def resources(key):
+        out = []
+        if key == "one_file":
+            # the example files first, the taller of the two beside each other on the page, then the pointer's one line
+            if res["agents_md"]:
+                files = [{"repo": e["repo"], "path": e["path"], "url": permalink(e)} for e in res["agents_md"]]
+                out.append({"kind": "files", "label": LEAD_RES["agents_md"], "files": files})
+            if res.get("pointer"):
+                out.append(code_res(LEAD_RES["pointer"], res["pointer"]))
+        elif key == "agent_ci" and res.get("agent_ci"):
+            out += [code_res(LEAD_RES[part], res["agent_ci"][part]) for part in ("trigger", "tools")]
+        elif key == "pinned":
+            if res.get("pin"):
+                out.append(code_res(LEAD_RES["pin"], res["pin"]))
+            # the cooldown as the tools the most pro repos set it in write it
+            where = next(
+                (lst for s in lenses["sections"] for lst in s.get("lists", []) if lst["id"] == "cooldown_in"),
+                {"rows": []},
+            )
+            tools = {label: key for key, label in COOLDOWN_NAMES.items()}
+            set_in = sorted(
+                (row for row in where["rows"] if tools.get(row["label"]) in res["cooldown"] and row["pro"]["k"]),
+                key=lambda row: -row["pro"]["k"],
+            )[:LEAD_LINES]
+            out += [
+                code_res(
+                    LEAD_RES["cooldown"] % (row["label"], row["pro"]["k"], row["pro"]["n"]),
+                    res["cooldown"][tools[row["label"]]],
+                )
+                for row in set_in
+            ]
+        return out + [prompt_res(key)]
+
+    def lead(key, practices):
+        seen = and_join(sorted({by[k]["seen"] for k in practices if k in by}))
+        cited = [by_url[STUDIES[k][1]] for k in LEAD_STUDIES.get(key, ()) if STUDIES[k][1] in by_url]
+        events = [
+            {"month": month, "label": label, "url": url}
+            for month, _, label, url in LENS_EVENTS
+            if label in LEAD_EVENTS.get(key, ())
+        ]
+        return {
+            "call": LEAD_CALLS[key],
+            "resources": resources(key),
+            "evidence": [
+                {
+                    "level": "observed",
+                    "who": "The Tech Meta",
+                    "text": "Read in %s, in the %d pro repos." % (seen, len(pro)),
+                }
+            ]
+            + cited,
+            "events": events,
+        }
+
+    about = lambda section, practices, key: {
+        "practices": practices,
+        "tags": note_tags(section, practices),
+        "lead": lead(key, practices),
+    }
+    leads = []
+    # one instruction file: the files of one tool taken out by repos that have an AGENTS.md, while AGENTS.md gains
+    cursor, copilot, shared = rows.get("cursor_rules"), rows.get("copilot_instructions"), by["agents_md"]["pro"]
+    if took(cursor) and shared["moves"]["gained"] > shared["moves"]["lost"]:
+        practices = ["cursor_rules"] + (["copilot_instructions"] if took(copilot) else []) + ["agents_md"]
+        rules = [rule_series(r, "cursor_rules") for r in pro]  # each repo's Cursor rules, snapshot by snapshot
+        leads.append(
+            [
+                "One instruction file, not one per tool",
+                " ".join(
+                    text
+                    for text in (
+                        "%s pro repos that had Cursor rules took them out; %s."
+                        % (cap(of_the(cursor["left"]["k"], cursor["left"]["n"])), cursor["after"]),
+                        cursor.get("reading"),
+                        "%s that had Copilot instructions took them out; %s."
+                        % (cap(of_the(copilot["left"]["k"], copilot["left"]["n"])), copilot["after"])
+                        if took(copilot)
+                        else None,
+                        "In %s %d pro repos added AGENTS.md and %s removed it."
+                        % (months(BACK), shared["moves"]["gained"], shared["moves"]["lost"] or "none"),
+                    )
+                    if text
+                ),
+                "h-left",
+                {
+                    "form": "trend",
+                    "title": "Share of the pro scene by month",
+                    "lines": [
+                        {"item": "agents_md", "league": "pro", "label": by["agents_md"]["label"]},
+                        {
+                            "label": cursor["label"],
+                            "league": "pro",
+                            "series": [
+                                share(sum(1 for held in rules if held[i]), len(pro))["p"] for i in range(len(dates))
+                            ],
+                        },
+                    ],
+                },
+                about("h-left", practices, "one_file"),
+            ]
+        )
+    # the agent in CI: taken out by LEAD_LEFT or more of the repos that ran one, most of which keep an AI reviewer, which
+    # most of the pro scene has
+    ci, review, fence = rows.get("agent_in_ci"), by["ai_review"]["pro"]["now"], more["fence"]
+    if took(ci) and ci["left"]["p"] >= LEAD_LEFT and 2 * review["k"] > review["n"]:
+        last = ci["when"][-1]
+        practices = ["agent_in_ci", "ai_review", "fence_tools"]
+        leads.append(
+            [
+                "The agent in CI is what teams take out; the reviewer stays",
+                "%s pro repos that ran an agent in CI took it out%s; %s. An AI reviewer comments in %d of %d pro repos. "
+                "Of the %d that run an agent in CI today, %d limit its tools and %d let anyone trigger it."
+                % (
+                    cap(of_the(ci["left"]["k"], ci["left"]["n"])),
+                    # the last snapshot's month is never named on the page: the issue carries the month after its data
+                    ", %d of them in the last month" % last if last >= SHOWN_MOVE else "",
+                    ci["after"],
+                    review["k"],
+                    review["n"],
+                    fence["agents"],
+                    by["fence_tools"]["pro"]["now"]["k"],
+                    fence["anyone"],
+                ),
+                "h-left",
+                {
+                    "form": "dots",
+                    "title": "The pro repos that ran an agent in CI, one dot each",
+                    "n": ci["left"]["n"],
+                    "parts": [
+                        {"label": "still run it", "k": ci["left"]["n"] - ci["left"]["k"]},
+                        {"label": "took it out", "k": ci["left"]["k"]},
+                    ],
+                },
+                about("h-left", practices, "agent_ci"),
+            ]
+        )
+    # pinned actions and the cooldown: the lens's own note, with the lines that set them as pro repos write them
+    rest = []
+    for note in notes:
+        if note[4].get("lead") != "pinned":
+            rest.append(note)
+            continue
+        leads.append(note[:4] + [dict(note[4], lead=lead("pinned", note[4]["practices"]))])
+    return leads, rest
 
 
 def note_tags(section, practices):
@@ -6011,6 +5911,41 @@ FIELD_ABOUT = dict(
 )
 
 
+def basics_intros(items, line):
+    """A field's intro twice, from line(practices): `intro` over its practices but the Basics, the list the page shows at
+    first, and `intro_all` over all of them, the list once the reader includes the Basics."""
+    return {"intro": line([i for i in items if not i["basic"]]), "intro_all": line(items)}
+
+
+def share_words(p):
+    """A share as a rule says it: "half", or a percentage."""
+    return "half" if p == 0.5 else percent(p)
+
+
+def basics_section(items, dates, at):
+    """The Basics, for meta.json's `basics`: the rule's two numbers and its reference snapshot (basic_at), the ids of the Basics on
+    the page in the order of PRACTICES, and the section's sentences: what it is, and the rule written from those numbers. The
+    page names no month of the last snapshot, so the reference is said as months ago and its own month."""
+    last, ref = dates[-1], dates[at]
+    gap = (int(last[:4]) - int(ref[:4])) * 12 + int(last[5:7]) - int(ref[5:7])
+    share_ = share_words(BASIC_SHARE)
+    when = "%s%d months ago, in %s" % (
+        "at the first snapshot, " if gap < BASIC_MONTHS else "",
+        gap,
+        month_name(ref, year=True, full=True),
+    )
+    return {
+        "label": "Basics",
+        "months": BASIC_MONTHS,
+        "share": BASIC_SHARE,
+        "ref": ref,
+        "ids": [i["id"] for i in items if i["basic"]],
+        "about": "The practices you already do, from every field, kept apart so that each field's list opens on the rest.",
+        "rule": "A Basic is a practice not specific to AI that %s of the pro scene or more already had %s. One read today only, "
+        "with no monthly history, is a Basic when %s of the pro scene or more has it today." % (share_, when, share_),
+    }
+
+
 # Build, the first section of Practices: its practices are M.items; this holds what they do not: the section's
 # sentences, the first snapshot of each practice, the dated events with their sources, and what the practice cards of
 # its practices hold (the page draws no card: their studies are the section's outside evidence, the rest opens in the
@@ -6021,33 +5956,41 @@ BUILD_THIN = 0.2  # the intro counts the practices under this share of the pro s
 def build_section(items, cards, dates):
     by = {i["id"]: i for i in items}
     or_none = lambda x: "%d" % x if x else "none"
-    thin = sum(1 for i in items if i["pro"]["now"]["p"] < BUILD_THIN)
     # the three agent practices the intro follows from the first snapshot, while all three are in the section
     agents = ("instructions", "agent_commits", "skills")
     k = lambda key, when="now": by[key]["pro"][when]["k"]
     parts = card_parts(cards)
+    head = (
+        "In %s, %s of %d pro repos had an agent instruction file, %s signed commits with an agent and %s had skills; "
+        "today %d, %d and %d do. "
+        % (
+            month_name(dates[0], year=True, full=True),
+            or_none(k("instructions", "first")),
+            by["instructions"]["pro"]["now"]["n"],
+            or_none(k("agent_commits", "first")),
+            or_none(k("skills", "first")),
+            k("instructions"),
+            k("agent_commits"),
+            k("skills"),
+        )
+        if all(key in by for key in agents)
+        else ""
+    )
+
+    def intro(of):
+        thin = sum(1 for i in of if i["pro"]["now"]["p"] < BUILD_THIN)
+        return (
+            head
+            + kinds_line(of)
+            + " %s %s in fewer than one pro repo in five." % (or_none(thin).capitalize(), "is" if thin == 1 else "are")
+        )
+
     return {
         "id": "build",
         "label": "Build",
         "about": FIELD_ABOUT["build"],
-        "intro": (
-            "In %s, %s of %d pro repos had an agent instruction file, %s signed commits with an agent and %s had skills; "
-            "today %d, %d and %d do. "
-            % (
-                month_name(dates[0], year=True, full=True),
-                or_none(k("instructions", "first")),
-                by["instructions"]["pro"]["now"]["n"],
-                or_none(k("agent_commits", "first")),
-                or_none(k("skills", "first")),
-                k("instructions"),
-                k("agent_commits"),
-                k("skills"),
-            )
-            if all(key in by for key in agents)
-            else ""
-        )
-        + kinds_line(items)
-        + " %s %s in fewer than one pro repo in five." % (or_none(thin).capitalize(), "is" if thin == 1 else "are"),
+        # the counts of the list as the page shows it at first, the Basics apart; with them, when the reader includes them
+        **basics_intros(items, intro),
         "blind": "An agent used with no file committed, no signature and no bot account; rules, servers and models set in a tool's "
         "own settings or on a developer's machine; whether an instruction file is followed, and whether it helps; templates "
         "and settings an organisation shares from another repo or keeps in GitHub's settings.",
@@ -6075,6 +6018,10 @@ def main(args):
     read_items = [count_practice(key, label, history, what, leagues) for key, label, history, what in ITEMS]
     read_lens = [count_practice(key, label, history, what, views) for key, label, history, what in LENS_ITEMS]
     candidates = read_items + read_lens
+    # every candidate says whether it is a Basic, judged at one snapshot for all (basic_at)
+    at = basic_at(dates)
+    for i in candidates:
+        i["basic"] = is_basic(i, at)
     by = {i["id"]: i for i in candidates}
     shown = {i["id"] for i in candidates if on_page(i)}
     for key, text in ABOUT.items():
@@ -6133,7 +6080,9 @@ def main(args):
         if set(note[4]) <= on_left
     ]
     sentences["notes"] = [
-        note[:4] + [{"practices": note[4], "tags": note_tags(note[2], note[4])}] for note in sentences["notes"]
+        note[:4]
+        + [dict({"practices": note[4], "tags": note_tags(note[2], note[4])}, **(note[5] if len(note) > 5 else {}))]
+        for note in sentences["notes"]
     ]
     gone = under_bar(candidates)
     # with the pro repos that ever had it at a snapshot, What left's base, over the repos it is read in
@@ -6145,8 +6094,9 @@ def main(args):
             if by[row["id"]]["history"]
             else None
         )
+    basics = basics_section([by[key] for key in PRACTICES if key in shown], dates, at)
     sentences["method_short"], sentences["method"] = method(
-        leagues, items, lens_items, left_rows, info, dates, by, gone
+        leagues, items, lens_items, left_rows, info, dates, by, gone, basics
     )
     if tuple(sentences["method"]) != METHOD_SECTIONS:
         raise ValueError("the sections of the Method tab are not METHOD_SECTIONS, in order")
@@ -6172,6 +6122,21 @@ def main(args):
         items, [c for c in practice_cards if c["id"] in shown and by[c["id"]]["field"] == "build"], dates
     )
     build["reading"] = dict(row_read, **build["reading"])
+    # the lead insights are the notes; the others are kept for later, off the page, in the same shape; a note about a
+    # practice that is not on the page goes with it
+    leads, rest = lead_notes(
+        sentences["notes"],
+        leagues,
+        by,
+        left_rows,
+        lenses,
+        more,
+        build["evidence"] + [e for s in lenses["sections"] for e in s["evidence"]],
+        dates,
+    )
+    sentences["notes"] = [note for note in leads if set(note[4]["practices"]) <= on_left]
+    sentences["later"] = [note for note in rest if set(note[4]["practices"]) <= on_left]
+    sentences["call_label"] = LEAD_CALL_LABEL
     sentences["left"] += " " + more["left_note"]
     sentences.update(left_copy(dates))
     sentences.update(span_copy(BACK, SHOWN_MOVE))
@@ -6194,7 +6159,8 @@ def main(args):
             "shown_left": SHOWN_LEFT,
             # What moved shows this many of its practices at each end, the rest behind a button
             "shown_practices": SHOWN_PRACTICES,
-            # each section of Practices and What left show this many, and "Show N more" this many more at a click
+            # each section of Practices and What left show this many, and "Show N more" this many more at a click; History
+            # this many rows of its charts
             "practices_first": PRACTICES_FIRST,
             # a list cut to its first rows shows whole when the cut would hide fewer rows than this
             "cut_min": CUT_MIN,
@@ -6229,6 +6195,8 @@ def main(args):
             },
             "copy": sentences,
             "lens": lenses,
+            # the Basics: the rule's numbers and its reference snapshot, the ids, the sentences of their section (basics_section)
+            "basics": basics,
             # the rows of What moved, in their order: the practices and the lens practices that may move
             "moved": order,
         },
