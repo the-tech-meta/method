@@ -798,9 +798,11 @@ SHOWN_MOVE, SHOWN_LEFT = 3, MIN_BASE
 # The rows What moved shows at each end before its button shows the rest.
 SHOWN_PRACTICES = 5
 # The rows each list of practices of the Practices tab (Build, Test, Secure, Ship) and What left show before their buttons
-# show more, and how many more "Show N more" shows at a click; History shows as many rows of its grid of charts, and as many
-# more at a click. What moved uses SHOWN_PRACTICES.
+# show more, and how many more "Show N more" shows at a click. What moved uses SHOWN_PRACTICES.
 PRACTICES_FIRST = 3
+# The rows of History's grid of charts shown before its one button shows them all: a row holds as many charts as the page's
+# width allows, so the cut is in rows, not in charts.
+FILM_ROWS = 2
 # Of the pro repos that had a practice this many snapshots ago or earlier, a year, the share that still have it today: the other
 # end of the report note on what left. A year, so that a practice is kept only where it had the time to go.
 STAYED_BACK = 12
@@ -6159,9 +6161,10 @@ def main(args):
             "shown_left": SHOWN_LEFT,
             # What moved shows this many of its practices at each end, the rest behind a button
             "shown_practices": SHOWN_PRACTICES,
-            # each section of Practices and What left show this many, and "Show N more" this many more at a click; History
-            # this many rows of its charts
+            # each section of Practices and What left show this many, and "Show N more" this many more at a click
             "practices_first": PRACTICES_FIRST,
+            # History shows this many rows of its grid of charts, then one button for all of them
+            "film_rows": FILM_ROWS,
             # a list cut to its first rows shows whole when the cut would hide fewer rows than this
             "cut_min": CUT_MIN,
             # the bar a candidate passes to be on the page (a share of the pro scene at the last snapshot), and the candidates
