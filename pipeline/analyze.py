@@ -3813,6 +3813,21 @@ def lens_lists(views):
                 ("All three", lambda f: {"tests", "lint", "types"} <= f["says"]),
             ],
         ),
+        # git hooks before agent hooks since 2026-11-27 (asked)
+        (
+            "checks",
+            "git_runs",
+            "What git hooks run",
+            "Of the repos with git hooks. Read from the hook scripts and configs.",
+            lambda f: f["git_hooks"],
+            True,
+            [
+                ("A linter or a formatter", is_in("git_runs", "lint")),
+                ("A type check", is_in("git_runs", "types")),
+                ("Tests", is_in("git_runs", "tests")),
+                ("A secret scan", is_in("git_runs", "secrets")),
+            ],
+        ),
         (
             "checks",
             "hook_runs",
@@ -3829,20 +3844,6 @@ def lens_lists(views):
                 ("A type check", is_in("hook_runs", "types")),
                 ("Tests", is_in("hook_runs", "tests")),
                 ("Another check script", is_in("hook_runs", "check")),
-            ],
-        ),
-        (
-            "checks",
-            "git_runs",
-            "What git hooks run",
-            "Of the repos with git hooks. Read from the hook scripts and configs.",
-            lambda f: f["git_hooks"],
-            True,
-            [
-                ("A linter or a formatter", is_in("git_runs", "lint")),
-                ("A type check", is_in("git_runs", "types")),
-                ("Tests", is_in("git_runs", "tests")),
-                ("A secret scan", is_in("git_runs", "secrets")),
             ],
         ),
         (
@@ -4637,7 +4638,11 @@ def lens(views, by, shown, rows, cards, dates):
     ]
     notes = [
         [
-            "Pinned actions went from %d to %d pro repos in %s%s"
+            # the headline names the hijack while its month is in the jump's span and the pro count kept rising after it; it
+            # says when, not why: the sentence under it says the hijack as a date and nothing more
+            "Pinned actions keep growing fast following the %s hijack" % month_of(hijack + "-01")
+            if hijack and start[:7] <= hijack <= end[:7] and pins[-1] > pins[jump + JUMP]
+            else "Pinned actions went from %d to %d pro repos in %s%s"
             % (pins[jump], pins[jump + JUMP], months(JUMP), " of %s" % start[:4] if start[:4] == end[:4] else ""),
             "%sBetween %s and %s, release cooldowns went from %d to %d. Today %d of %d pro repos pin their GitHub Actions to a "
             "commit and %d write a cooldown, against %d and %d in %s."
@@ -5806,11 +5811,11 @@ def lead_notes(notes, leagues, by, left_rows, lenses, more, studies, dates):
     # one instruction file: the files of one tool taken out by repos that have an AGENTS.md, while AGENTS.md gains
     cursor, copilot, shared = rows.get("cursor_rules"), rows.get("copilot_instructions"), by["agents_md"]["pro"]
     if took(cursor) and shared["moves"]["gained"] > shared["moves"]["lost"]:
-        practices = ["cursor_rules"] + (["copilot_instructions"] if took(copilot) else []) + ["agents_md"]
+        practices = ["cursor_rules"] + (["copilot_instructions"] if took(copilot) else []) + ["agents_md", "claude_md"]
         rules = [rule_series(r, "cursor_rules") for r in pro]  # each repo's Cursor rules, snapshot by snapshot
         leads.append(
             [
-                "One instruction file, not one per tool",
+                "AGENTS.md is replacing other instruction files",
                 " ".join(
                     text
                     for text in (
@@ -5832,6 +5837,8 @@ def lead_notes(notes, leagues, by, left_rows, lenses, more, studies, dates):
                     "title": "Share of the pro scene by month",
                     "lines": [
                         {"item": "agents_md", "league": "pro", "label": by["agents_md"]["label"]},
+                        # CLAUDE.md, the other tool's file most pro repos have: its line shows where it stands against AGENTS.md
+                        {"item": "claude_md", "league": "pro", "label": by["claude_md"]["label"]},
                         {
                             "label": cursor["label"],
                             "league": "pro",
@@ -5852,7 +5859,7 @@ def lead_notes(notes, leagues, by, left_rows, lenses, more, studies, dates):
         practices = ["agent_in_ci", "ai_review", "fence_tools"]
         leads.append(
             [
-                "The agent in CI is what teams take out; the reviewer stays",
+                "Teams keep the AI reviewer and take the agent out of CI",
                 "%s pro repos that ran an agent in CI took it out%s; %s. An AI reviewer comments in %d of %d pro repos. "
                 "Of the %d that run an agent in CI today, %d limit its tools and %d let anyone trigger it."
                 % (
