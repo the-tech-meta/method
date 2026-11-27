@@ -89,6 +89,33 @@ class Numbers(unittest.TestCase):
         self.assertEqual(A.month_name("2025-12-17", year=True), "Dec 2025")
 
 
+class Banner(unittest.TestCase):
+    """The banner names four organisations of the pro scene: the build stops, saying which, when
+    one has no repo left there or its owner is not an organisation."""
+
+    PRO = [
+        {"name": name, "facts": {"owner_type": "Organization"}}
+        for name in ("huggingface/transformers", "n8n-io/n8n", "Supabase/supabase", "bluesky-social/atproto", "other/x")
+    ]
+
+    def test_the_four_owners_in_the_pro_scene_give_the_text(self):
+        said = A.banner(self.PRO)
+        self.assertEqual(list(said), ["lead", "body"])
+        self.assertIn("like Hugging Face, n8n, Supabase, Bluesky, to uncover", "".join(s["text"] for s in said["body"]))
+        self.assertEqual([s["text"] for s in said["body"] if s["org"]], ["Hugging Face", "n8n", "Supabase", "Bluesky"])
+
+    def test_an_owner_with_no_pro_repo_left_stops_the_build(self):
+        for gone in ("huggingface", "n8n-io", "supabase", "bluesky-social"):
+            pro = [r for r in self.PRO if r["name"].split("/")[0].lower() != gone]
+            with self.assertRaisesRegex(ValueError, r"\(%s\), which has no repo left in the pro scene" % gone):
+                A.banner(pro)
+
+    def test_an_owner_that_is_not_an_organisation_stops_the_build(self):
+        pro = [dict(r, facts={"owner_type": "User"}) if r["name"] == "n8n-io/n8n" else r for r in self.PRO]
+        with self.assertRaisesRegex(ValueError, r"n8n \(n8n-io\), whose owner is not an organisation"):
+            A.banner(pro)
+
+
 class Intros(unittest.TestCase):
     """The intro of Test and of Secure, counted from whatever practices the section holds, naming none, so that it stays
     true when a practice is added or removed; one practice, or none, has its own words."""
@@ -247,8 +274,12 @@ class Basics(unittest.TestCase):
             "A Basic is a practice not specific to AI that half of the pro scene or more already had 18 months ago, in May "
             "2025. One read today only, with no monthly history, is a Basic when half of the pro scene or more has it today.",
         )
+        self.assertEqual(got["tip"], "Practices that 50%+ of the pro scene already had 18 months ago.")
         short = A.basics_section(items, self.MONTHLY[-6:], 0)
         self.assertIn("already had at the first snapshot, 5 months ago, in June 2026.", short["rule"])
+        self.assertEqual(
+            short["tip"], "Practices that 50%+ of the pro scene already had at the first snapshot, 5 months ago."
+        )
 
 
 class Series(unittest.TestCase):

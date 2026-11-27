@@ -3132,6 +3132,47 @@ def copy(leagues, items, info, models, ctx, left_rows, jobs, dates, shown=None):
     }
 
 
+# The organisations the banner names: GitHub owners with the names the banner gives them, in the text's order.
+# Each must own a repo of the pro scene, an organisation's (the panels' rule, condition 1), or the build stops: banner().
+BANNER_OWNERS = [
+    ("huggingface", "Hugging Face"),
+    ("n8n-io", "n8n"),
+    ("supabase", "Supabase"),
+    ("bluesky-social", "Bluesky"),
+]
+# The page writes British English ("An organisation's public repo"); "analyzes" here gives the American spelling.
+BANNER_VERB = "analyses"
+
+
+def banner(pro):
+    """The banner between the tagline and the tabs: a lead, "Real practices, not opinions.", which the page sets apart, and a
+    body that says what the page reads and why. The body is a list of segments, each `{"text", "org"}`: `org` marks an
+    organisation's name, which the page sets in bold in the accent; joined, the segments are the sentence. The organisations
+    it names are BANNER_OWNERS, each checked against `pro`, the pro scene's repos: an owner with no repo left there, or one
+    that is not an organisation, stops the build."""
+    for owner, name in BANNER_OWNERS:
+        held = [r for r in pro if r["name"].split("/")[0].lower() == owner]
+        if not held:
+            raise ValueError(
+                "the banner names %s (%s), which has no repo left in the pro scene: BANNER_OWNERS" % (name, owner)
+            )
+        if any(r["facts"]["owner_type"] != panel.OWNER_TYPE for r in held):
+            raise ValueError("the banner names %s (%s), whose owner is not an organisation" % (name, owner))
+    body = [
+        {"text": "The Tech Meta %s the repositories of the top open source startups like " % BANNER_VERB, "org": False}
+    ]
+    for i, (_, name) in enumerate(BANNER_OWNERS):
+        body += [{"text": ", ", "org": False}] if i else []
+        body.append({"text": name, "org": True})
+    body.append(
+        {
+            "text": ", to uncover the most common practices and reveal how professional teams are building with AI.",
+            "org": False,
+        }
+    )
+    return {"lead": "Real practices, not opinions.", "body": body}
+
+
 # ---------- The lenses: Test, Secure and Ship (checks, security, ship) ------------------------------
 # The same repos, read a second way. A lens practice is a practice like the others (a yes/no question asked of a repo at
 # a date) that also belongs to a lens. The page gives each lens a section of its own, so that its practices are not lost
@@ -4893,9 +4934,6 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone,
                 )
             )
     first, last = dt.date.fromisoformat(dates[0]), dt.date.fromisoformat(dates[-1])
-    # the year a repo must be created before, as the summary says it: "2025" for 1 January, the day itself otherwise
-    created = rule["created_before"]
-    before = created[:4] if created[5:] == "01-01" else long_day(created)
     n_repos = len(pro) + len(ladder)
 
     summary = [
@@ -4920,9 +4958,9 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone,
         ],
         [
             "The rule",
-            "An organisation's public repo, created before %s, pushed to in the last %d days, with %d files or more and "
+            "An organisation's public repo, pushed to in the last %d days, with %d files or more and "
             "already active in %s. Checked before any practice is read."
-            % (before, rule["active_days"], rule["min_files"], month_year(rule["early_day"])),
+            % (rule["active_days"], rule["min_files"], month_year(rule["early_day"])),
         ],
         [
             "Detection",
@@ -5949,6 +5987,10 @@ def basics_section(items, dates, at):
         "about": "The practices you already do, from every field, kept apart so that each field's list opens on the rest.",
         "rule": "A Basic is a practice not specific to AI that %s of the pro scene or more already had %s. One read today only, "
         "with no monthly history, is a Basic when %s of the pro scene or more has it today." % (share_, when, share_),
+        # the rule in short, for the tooltip on the word "Basics" in the quick menu: the share as "50%+" (half or more; a
+        # leading "+" is a change on this page) and the months back to the same reference
+        "tip": "Practices that %s+ of the pro scene already had %s%d months ago."
+        % (percent(BASIC_SHARE), "at the first snapshot, " if gap < BASIC_MONTHS else "", gap),
     }
 
 
@@ -6104,6 +6146,7 @@ def main(args):
     sentences["method_short"], sentences["method"] = method(
         leagues, items, lens_items, left_rows, info, dates, by, gone, basics
     )
+    sentences["banner"] = banner(leagues["pro"])
     if tuple(sentences["method"]) != METHOD_SECTIONS:
         raise ValueError("the sections of the Method tab are not METHOD_SECTIONS, in order")
     blocks = [b for section in sentences["method"].values() for b in section]
