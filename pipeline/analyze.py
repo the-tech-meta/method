@@ -233,6 +233,22 @@ def passes_bar(k, n):
 BASIC_MONTHS = 18
 BASIC_SHARE = 0.5
 
+# The page's grid: the monthly dates from the rule's window start to the last snapshot, AS_OF (panel.rule: the monthly date
+# panel.ROLL_MONTHS months before it). Every figure over time is read on it: History, What moved, What left, the lenses' "then",
+# Growth, the models' months, the releases shown. By the rule, every repo of both panels was already active at the window's
+# start, so nearly every repo has a state at each date of the grid; one whose default branch's history begins later (the rule
+# counts the commits of every parent, the scan follows the history it replays) has none at the first dates, and counts there as
+# without every practice, as the fixed panel has it (series). The scans hold more: the grid from
+# common.snapshot_dates' first date, which the rule reads and the page does not. The window rolls one month on at each issue,
+# so the grid keeps ROLL_MONTHS + 1 dates. The Basics' reference (BASIC_MONTHS back, basic_at) is another rule with its own
+# number: while it is ROLL_MONTHS or fewer it falls on the grid, and past that it would be the grid's first date.
+WINDOW_START = dt.date.fromisoformat(panel.rule(AS_OF)["window_start"])
+
+
+def grid():
+    """The page's monthly dates, as days: from the window's start to AS_OF."""
+    return snapshot_dates(AS_OF, WINDOW_START)
+
 
 def basic_at(dates):
     """The index in `dates` of the snapshot a Basic is judged at: the last one on or before the day BASIC_MONTHS months before
@@ -663,8 +679,16 @@ BANDS = [
     },
 ]
 
+
+def in_grid(month, dates):
+    """Whether a dated event's month is one of the grid's: an event before the window's start has no place on a chart or a
+    timeline of the page, which start there (grid), and is not written to meta.json."""
+    return dates[0][:7] <= month <= dates[-1][:7]
+
+
 # Releases marked on the film and on Build's timeline, to the month, with the page that dates each.
-# The film's ticks take the month and the label; Build's timeline links each to its source.
+# The film's ticks take the month and the label; Build's timeline links each to its source. Only those of the grid's months
+# are written (in_grid).
 EVENTS = [
     ("2025-02", "Claude Code preview", "https://www.anthropic.com/news/claude-3-7-sonnet"),
     ("2025-05", "Claude Code generally available", "https://www.anthropic.com/news/claude-4"),
@@ -1195,6 +1219,23 @@ def api_features(api):
 API_PRACTICES = ("agent_prs", "ai_review", "preview_deploys")
 
 
+def on_grid(scan):
+    """A scan cut to the page's grid (grid()): its snapshots from the window's start on. A scan holds the whole grid of
+    common.snapshot_dates, from its first date, which the rule reads (condition 5) and the page does not show. A scan of
+    another grid, or with no state at the last snapshot, fails loudly: it would be read as a repo without the practices. A
+    repo with no state at the first dates of the grid is kept, and counts there as without every practice (series); the
+    Method tab says how many (method)."""
+    full = [d.isoformat() for d in snapshot_dates()]
+    if len(scan["snaps"]) != len(full) or any(s and s["date"] != day for s, day in zip(scan["snaps"], full)):
+        raise ValueError(
+            "the scan of %s is not on the grid ending on %s: scan it again (scan.py)" % (scan["name"], AS_OF)
+        )
+    snaps = scan["snaps"][full.index(WINDOW_START.isoformat()) :]
+    if snaps[-1] is None:
+        raise ValueError("%s has no state at %s, the last snapshot: scan it again (scan.py)" % (scan["name"], AS_OF))
+    return dict(scan, snaps=snaps)
+
+
 def load(league):
     repos = []
     for r in read_json(DATA / ("panel_%s.json" % league)):
@@ -1202,7 +1243,7 @@ def load(league):
         api_path = DATA / "api" / (slug(r["name"]) + ".json")
         if not scan_path.exists() or not api_path.exists():
             continue
-        scan, api = read_json(scan_path), read_json(api_path)
+        scan, api = on_grid(read_json(scan_path)), read_json(api_path)
         # `api_on`: the day the API was read for this repo, which its file carries (`as_of`); the run date for a repo read with the run
         r = dict(r, scan=scan, api=api_features(api), api_on=api["as_of"])
         r["f"] = [features(scan, i) for i in range(len(scan["snaps"]))]
@@ -1349,9 +1390,12 @@ def kept_first(rows):
 
 
 def left_copy(dates):
-    """The intro of What left: it holds the first snapshot and the floor."""
+    """The intros of History and of What left: they hold the grid's first snapshot, the window's start (grid), and What left's
+    floor."""
     first = AS_OF.replace(year=int(dates[0][:4]), month=int(dates[0][5:7]), day=1).strftime("%B %Y")
     return {
+        "film_intro": "Adoption month by month since %s, replayed from git history. Ticks mark model and tool releases: hover a "
+        "chart to name them. The most common among pros come first." % first,
         "left_intro": "Of the pro repos that had a practice at any monthly snapshot since %s, the share that took it out, and "
         "when. Keeping a file costs nothing, so a removal says more than a stay. Most taken out first. Practices fewer than %s "
         "pro repos took out are left out." % (first, words(SHOWN_MOVE)),
@@ -1493,7 +1537,7 @@ def model_history(leagues):
     scan holds the months of its whole history, which starts before the first snapshot, and a count over those would
     cover a month the other does not."""
     counts, unnamed, seen_in = collections.defaultdict(collections.Counter), 0, collections.defaultdict(set)
-    months = sorted({d.isoformat()[:7] for d in snapshot_dates()})
+    months = sorted({d.isoformat()[:7] for d in grid()})
     for repos in leagues.values():
         for r in repos:
             for key, n in r["scan"]["models"].items():
@@ -4508,7 +4552,9 @@ def lens(views, by, shown, rows, cards, dates):
             section["left"] = sorted(section["left"], key=lambda row: (-row["left"]["p"], -row["left"]["k"]))
         section["items"] = of_field(section["id"])
         section["events"] = [
-            {"month": m, "label": label, "url": url} for m, where, label, url in LENS_EVENTS if where == section["id"]
+            {"month": m, "label": label, "url": url}
+            for m, where, label, url in LENS_EVENTS
+            if where == section["id"] and in_grid(m, dates)
         ]
         section["lists"] = [
             {key: value for key, value in l.items() if key != "lens"} for l in lists if l["lens"] == section["id"]
@@ -4821,10 +4867,6 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone,
     pro, ladder = leagues["pro"], leagues["ladder"]
     month_year = lambda iso: AS_OF.replace(year=int(iso[:4]), month=int(iso[5:7]), day=1).strftime("%B %Y")
     of = lambda x: "%d of %d" % (x["k"], x["n"])
-    # The panels are fixed (series, moves): the repos of each league created since the first snapshot and since "then"
-    new = {lg: (new_since(repos, 0), new_since(repos, -1 - BACK)) for lg, repos in leagues.items()}
-    repos_of = lambda k, lg: "%d %s repo%s" % (k, lg, "" if k == 1 else "s") if k else "no %s repo" % lg
-    or_none = lambda k: "%d" % k if k else "none"
     # a count the page writes in place of a percentage: the chip of What left with the largest base under MIN_BASE
     small = max((row["left"] for row in left_rows if row["left"]["n"] < MIN_BASE), key=lambda x: x["n"], default=None)
     # the practices where the pro share is above the ladder's, of every practice (the lens ones too)
@@ -4857,6 +4899,18 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone,
     # funnels, the owners it leaves out with their ties, and Runa Capital's own words on how the ROSS Index is built
     # (data/ross_index.json)
     rule, draw, picked = info["rule"], info["ladder"], info["pro"]
+    # the panels were built for this page: the rule's dates are those of its last snapshot, and its window's start is where the
+    # page's grid starts (grid). Its thresholds are the build's, which the words below say
+    dated = {key: panel.rule(AS_OF)[key] for key in ("first_day", "window_start", "windows")}
+    if (
+        info["as_of"] != AS_OF.isoformat()
+        or any(rule[key] != day for key, day in dated.items())
+        or dates[0] != rule["window_start"]
+    ):
+        raise ValueError(
+            "the panels were built for a page of %s, not of %s: build them again (panel.py rule)"
+            % (info["as_of"], AS_OF)
+        )
     if sorted(panel.LEFT_OUT) != info["left_out"]:
         raise ValueError(
             "the owners left out are not those the panels were built with: build them again (panel.py rule)"
@@ -4868,12 +4922,18 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone,
         "public": "it is public",
         "not_archived": "not archived",
         "not_fork": "not a fork",
-        "created": "it was created before %s" % long_day(rule["created_before"]),
         "pushed": "it had a push in the last %d days" % rule["active_days"],
         "files": "it has %d files or more at the tip of its default branch" % rule["min_files"],
-        "early_commits": "it had %d commits or more, merges left out, in the %d days before %s, the first snapshot: activity "
-        "from before agents, not what the page measures"
-        % (rule["min_early_commits"], rule["early_days"], long_day(rule["early_day"])),
+        # the windows of panel.rule: the page's monthly dates from the grid's first to the window's start, ROLL_MONTHS back
+        "already_active": "it was already active %d months ago or earlier: %d commits or more, merges left out, in the %d "
+        "days before one of the monthly dates from %s to %s"
+        % (
+            rule["roll_months"],
+            rule["min_commits"],
+            rule["commit_days"],
+            long_day(rule["first_day"]),
+            long_day(rule["window_start"]),
+        ),
         "not_vendor": "its owner is not one of the %d left out: the makers of the coding agents the page counts, and owners "
         "tied to them" % len(panel.LEFT_OUT),
     }
@@ -4888,11 +4948,10 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone,
         "public": "private",
         "not_archived": "archived",
         "not_fork": "a fork",
-        "created": "created on %s or later" % long_day(rule["created_before"]),
         "pushed": "with no push in %d days" % rule["active_days"],
         "not_vendor": "an owner left out",
         "files": "under %d files" % rule["min_files"],
-        "early_commits": "under %d early commits" % rule["min_early_commits"],
+        "already_active": "not active %d months ago" % rule["roll_months"],
     }
     removed = lambda funnel: [
         "%s %s" % ("{:,}".format(f["removed"]), removed_words[f["condition"]]) for f in funnel if f["removed"]
@@ -4935,6 +4994,47 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone,
             )
     first, last = dt.date.fromisoformat(dates[0]), dt.date.fromisoformat(dates[-1])
     n_repos = len(pro) + len(ladder)
+    # The fixed panel (series): the repos of each league with no state at the grid's first date and at "then", and the date the
+    # last of them has one from. By the rule all were active at the window's start; a repo whose default branch's history
+    # begins later has none there
+    late = {lg: [r for r in repos if r["f"][0] is None] for lg, repos in leagues.items()}
+    late_then = {lg: new_since(repos, -1 - BACK) for lg, repos in leagues.items()}
+    late_k = [(len(late[lg]), lg) for lg in ("pro", "ladder") if late[lg]]
+    if not late_k:
+        late_line = (
+            "By the rule, every one of them was already active on %s, where the curves start, so each has a state at "
+            "every date shown." % long_day(dates[0])
+        )
+    else:
+        one = sum(k for k, _ in late_k) == 1
+        since = max(next(i for i, f in enumerate(r["f"]) if f) for lg in late for r in late[lg])
+        late_line = (
+            "%s %s no history at %s, where the curves start, though the rule found %s active then: %s default %s later "
+            "(%s)."
+            % (
+                " and ".join("%d %s repo%s" % (k, lg, "" if k == 1 else "s") for k, lg in late_k),
+                "has" if one else "have",
+                long_day(dates[0]),
+                "it" if one else "them",
+                "its" if one else "their",
+                "branch's history starts" if one else "branches' histories start",
+                ("from %s" if one else "the last from %s") % long_day(dates[since]),
+            )
+            + (
+                " %s at %s, where What moved starts."
+                % (
+                    " and ".join(
+                        "%d %s repo%s" % (late_then[lg], lg, "" if late_then[lg] == 1 else "s")
+                        for lg in ("pro", "ladder")
+                        if late_then[lg]
+                    )
+                    + (" still has none" if sum(late_then.values()) == 1 else " still have none"),
+                    long_day(dates[-1 - BACK]),
+                )
+                if any(late_then.values())
+                else ""
+            )
+        )
 
     summary = [
         # the candidates the bar lets through, in the four fields
@@ -4959,8 +5059,8 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone,
         [
             "The rule",
             "An organisation's public repo, pushed to in the last %d days, with %d files or more and "
-            "already active in %s. Checked before any practice is read."
-            % (rule["active_days"], rule["min_files"], month_year(rule["early_day"])),
+            "already active %d months ago or earlier. Checked before any practice is read."
+            % (rule["active_days"], rule["min_files"], rule["roll_months"]),
         ],
         [
             "Detection",
@@ -5005,10 +5105,20 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone,
                 "How the ladder is drawn",
                 "A uniform draw from the repos that pass the same rule with %d stars or more." % rule["min_stars"],
                 items=[
+                    # the last day is the day before the lists were made (panel.py), which the page does not date
                     "Every creation day from %s to %s is put in a random order."
-                    % (long_day(draw["first_day"]), long_day(draw["last_day"])),
+                    % (
+                        long_day(draw["first_day"]),
+                        "the day before the lists were made"
+                        if dt.date.fromisoformat(draw["last_day"])
+                        == dt.date.fromisoformat(info["built_on"]) - dt.timedelta(days=1)
+                        else long_day(draw["last_day"]),
+                    ),
                     "The days are taken in that order, and every repo created on them that passes is pooled, until there "
                     "are %d or more." % rule["ladder_size"],
+                    # panel.day_order: a day's place is drawn from the seed and the day alone
+                    "A day's place in the order depends on that day alone, so the order holds when the span grows at the "
+                    "next issue.",
                     "%d are drawn from the %s." % (len(ladder), "{:,}".format(draw["pool"])),
                 ],
             ),
@@ -5016,7 +5126,10 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone,
             block(
                 METHOD_INVITE,
                 "By rule, the same for both leagues: never by hand, and never on the traces the page counts. A repo is in "
-                "when it passes all %s, on the day the lists are made, before the scan." % words(len(numbered)),
+                "when it passes all %s, on the day the lists are made, before the scan. The rule rolls: at each issue its "
+                "date moves one month on, and a repo active %d months back or earlier passes again, so the pro scene grows. A "
+                "repo leaves only when it fails another condition, such as a push in the last %d days."
+                % (words(len(numbered)), rule["roll_months"], rule["active_days"]),
                 items=conditions,
                 ordered=True,
                 more={
@@ -5057,6 +5170,19 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone,
                                 "page does not count" % ties["named"],
                             ],
                         },
+                        {
+                            "title": "What it cannot see",
+                            "items": [
+                                # the first window opens COMMIT_DAYS days before the first of the rule's monthly dates
+                                "Activity before %s: the first window opens then."
+                                % month_year(
+                                    (
+                                        dt.date.fromisoformat(rule["first_day"])
+                                        - dt.timedelta(days=rule["commit_days"])
+                                    ).isoformat()
+                                ),
+                            ],
+                        },
                     ],
                 },
             ),
@@ -5067,19 +5193,9 @@ def method(leagues, items, lens_items, left_rows, info, dates, candidates, gone,
                 items=[
                     "A curve ends on today's figure.",
                     "The past shown is the past of today's repos, not of every repo alive then.",
-                    "A repo created since a date counts there as without the practice, which can only lower a past share.",
-                    "%s and %s were created since %s, %s and %s since %s, where What moved starts."
-                    % (
-                        repos_of(new["pro"][0], "pro").capitalize(),
-                        repos_of(new["ladder"][0], "ladder"),
-                        month_year(dates[0]),
-                        or_none(new["pro"][1]),
-                        or_none(new["ladder"][1]),
-                        month_year(dates[-1 - BACK]),
-                    )
-                    if new["pro"][0] or new["ladder"][0]
-                    else "No repo of either league was created since %s: the rule takes only repos created before %s."
-                    % (month_year(dates[0]), long_day(rule["created_before"])),
+                    "A repo with no history yet at a date counts there as without the practice, which can only lower a "
+                    "past share.",
+                    late_line,
                 ],
             ),
         ],
@@ -5665,7 +5781,7 @@ def lead_notes(notes, leagues, by, left_rows, lenses, more, studies, dates):
         events = [
             {"month": month, "label": label, "url": url}
             for month, _, label, url in LENS_EVENTS
-            if label in LEAD_EVENTS.get(key, ())
+            if label in LEAD_EVENTS.get(key, ()) and in_grid(month, dates)
         ]
         return {
             "call": LEAD_CALLS[key],
@@ -6042,7 +6158,7 @@ def build_section(items, cards, dates):
         "blind": "An agent used with no file committed, no signature and no bot account; rules, servers and models set in a tool's "
         "own settings or on a developer's machine; whether an instruction file is followed, and whether it helps; templates "
         "and settings an organisation shares from another repo or keeps in GitHub's settings.",
-        "events": [{"month": m, "label": label, "url": url} for m, label, url in EVENTS],
+        "events": [{"month": m, "label": label, "url": url} for m, label, url in EVENTS if in_grid(m, dates)],
         "first": {i["id"]: {lg: i[lg]["first"] for lg in ("pro", "ladder")} for i in items if i["history"]},
         # the readings of the cards: the Insight of their practice's row
         "reading": parts["reading"],
@@ -6053,7 +6169,7 @@ def build_section(items, cards, dates):
 
 
 def main(args):
-    dates = [d.isoformat() for d in snapshot_dates()]
+    dates = [d.isoformat() for d in grid()]
     leagues = {name: load(name) for name in ("pro", "ladder")}
     # the repos whose snapshots were read for the lens practices, with their answers in the place of the practices'
     views = {lg: lens_view(repos) for lg, repos in leagues.items()}
@@ -6222,7 +6338,7 @@ def main(args):
             "bands": BANDS,
             "models": models,
             "kit": kit_lists,
-            "events": [{"month": m, "label": label} for m, label, _ in EVENTS],
+            "events": [{"month": m, "label": label} for m, label, _ in EVENTS if in_grid(m, dates)],
             "builds": build_rows,
             "left": left_rows,
             # the rows of What left, as ids in their order (left_lists)

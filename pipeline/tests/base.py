@@ -6,7 +6,7 @@ data/meta.json. A test that needs one is skipped when it is absent: see needs().
 The run date is given to the pipeline (METATECH_AS_OF) before any module is imported: common.py fixes AS_OF at import,
 and without it AS_OF would be today. It is the run date of data/meta.json when that file is there. Without it, the tests
 need only the day of the month, because the grid of snapshots falls on the run's day: the day of the rule's first
-snapshot (rule.early_day in data/panel_rule.json). So it is today's date moved to that day.
+snapshot (rule.first_day in data/panel_rule.json). So it is today's date moved to that day.
 """
 
 import datetime
@@ -57,7 +57,7 @@ def meta():
 if (DATA / "meta.json").exists():
     os.environ.setdefault("METATECH_AS_OF", meta()["as_of"])
 else:
-    early_day = datetime.date.fromisoformat(read(DATA / "panel_rule.json")["rule"]["early_day"])
+    early_day = datetime.date.fromisoformat(read(DATA / "panel_rule.json")["rule"]["first_day"])
     os.environ.setdefault("METATECH_AS_OF", datetime.date.today().replace(day=early_day.day).isoformat())
 
 

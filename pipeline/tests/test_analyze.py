@@ -1,5 +1,6 @@
 """The pure functions of analyze.py on small inputs worked out by hand."""
 
+import datetime as dt
 import unittest
 
 import base  # noqa: F401  (sets the run date before analyze is imported)
@@ -230,6 +231,14 @@ class Basics(unittest.TestCase):
         # it rolls with the run: a month later, a month later
         self.assertEqual(self.MONTHLY[A.basic_at(self.MONTHLY[:-1])], "2025-04-17")
 
+    def test_on_the_page_s_grid_the_reference_is_its_first_date(self):
+        """The page's grid starts at the rule's window start, panel.ROLL_MONTHS back: while the Basics look as
+        far back, their reference is the grid's first date, the same day as the rule's, though the two are two numbers."""
+        dates = [d.isoformat() for d in A.grid()]
+        self.assertEqual(A.panel.ROLL_MONTHS, A.BASIC_MONTHS)
+        self.assertEqual(A.basic_at(dates), 0)
+        self.assertEqual(dates[A.basic_at(dates)], A.panel.rule(A.AS_OF)["window_start"])
+
     def test_a_short_history_is_judged_at_the_first_snapshot(self):
         dates = self.MONTHLY[-6:]
         self.assertEqual(A.basic_at(dates), 0)
@@ -406,16 +415,80 @@ class Left(unittest.TestCase):
         self.assertNotIn("after", cursor, "under 3 leavers: no sentence")
 
 
+class Grid(unittest.TestCase):
+    """The page's grid: the monthly dates from the rule's window start to the last snapshot.
+    A scan holds the whole grid of common.snapshot_dates; the analysis reads it from the window's start, and a repo with no state
+    there fails it loudly."""
+
+    @staticmethod
+    def scan(first=None):
+        full = A.snapshot_dates()
+        snaps = [{"date": d.isoformat(), "set": 0} for d in full]
+        if first:
+            snaps = [None if d < first else s for d, s in zip(full, snaps)]
+        return {"name": "o/r", "snaps": snaps, "sets": []}
+
+    def test_the_grid_starts_at_the_window_s_start(self):
+        grid, full = A.grid(), A.snapshot_dates()
+        self.assertEqual(grid[0], A.WINDOW_START)
+        self.assertEqual(len(grid), A.panel.ROLL_MONTHS + 1)
+        self.assertEqual(full[-len(grid) :], grid)
+        self.assertEqual(
+            full[: len(full) - len(grid) + 1], [dt.date.fromisoformat(d) for d in A.panel.rule(A.AS_OF)["windows"]]
+        )
+
+    def test_a_scan_is_cut_to_the_grid(self):
+        got = A.on_grid(self.scan())
+        self.assertEqual([s["date"] for s in got["snaps"]], [d.isoformat() for d in A.grid()])
+        # a repo born after the scans' first date and before the window's start: the dates before it are not read
+        later = A.snapshot_dates()[2]
+        self.assertEqual(A.on_grid(self.scan(first=later))["snaps"][0]["date"], A.WINDOW_START.isoformat())
+        self.assertEqual(A.on_grid(self.scan(first=A.WINDOW_START))["snaps"][0]["date"], A.WINDOW_START.isoformat())
+
+    def test_no_state_at_the_window_s_start_is_kept_and_none_at_the_last_fails(self):
+        """A repo whose default branch's history starts after the window's start has no state at the first dates: it is kept,
+        and counts there as without every practice (the fixed panel); one with no state at the last snapshot fails."""
+        got = A.on_grid(self.scan(first=A.grid()[1]))
+        self.assertEqual([s is None for s in got["snaps"][:2]], [True, False])
+        with self.assertRaisesRegex(ValueError, "has no state at %s, the last snapshot" % A.AS_OF):
+            A.on_grid(self.scan(first=A.AS_OF + dt.timedelta(days=1)))
+
+    def test_a_scan_of_another_grid_fails(self):
+        scan = self.scan()
+        with self.assertRaisesRegex(ValueError, "not on the grid"):
+            A.on_grid(dict(scan, snaps=scan["snaps"][1:]))
+        moved = [dict(s, date=s["date"][:8] + "18") for s in scan["snaps"]]
+        with self.assertRaisesRegex(ValueError, "not on the grid"):
+            A.on_grid(dict(scan, snaps=moved))
+
+    def test_an_event_before_the_window_s_start_is_off_the_page(self):
+        dates = [d.isoformat() for d in A.grid()]
+        before = (A.WINDOW_START - dt.timedelta(days=31)).isoformat()[:7]
+        self.assertFalse(A.in_grid(before, dates))
+        self.assertTrue(A.in_grid(dates[0][:7], dates))
+        self.assertTrue(A.in_grid(dates[-1][:7], dates))
+        self.assertEqual(
+            [m for m, _, _ in A.EVENTS if not A.in_grid(m, dates)], [m for m, _, _ in A.EVENTS if m < dates[0][:7]]
+        )
+
+
 class Models(unittest.TestCase):
     def test_both_counts_are_over_the_months_of_the_grid(self):
-        """A scan holds the months of its whole history, which starts before the first snapshot: a commit of a month off
-        the grid is in neither count, the commits that only say Claude included."""
-        first = A.snapshot_dates()[0].isoformat()[:7]
-        self.assertEqual(first, "2025-01")
+        """A scan holds the months of its whole history, which starts before the first snapshot of the page: a commit of a month
+        off the grid is in neither count, the commits that only say Claude included. The grid starts at the rule's window start,
+        so the months of the scan's first snapshots, which the rule reads, are off it too."""
+        first = A.grid()[0].isoformat()[:7]
+        self.assertEqual(A.grid()[0], A.WINDOW_START)
+        self.assertEqual(A.WINDOW_START.isoformat(), A.panel.rule(A.AS_OF)["window_start"])
+        self.assertEqual(first, "2025-05")
+        scanned = A.snapshot_dates()[0].isoformat()[:7]  # the scans' first snapshot, before the window's start
+        self.assertLess(scanned, first)
         models = {
             "2024-10 claude": 5,
             "2024-12 claude": 3,
             "2024-12 opus 4.5": 7,
+            scanned + " claude": 11,
+            scanned + " opus 4.5": 13,
             first + " claude": 2,
             first + " opus 4.5": 30,
             "2026-11 claude": 1,
@@ -428,8 +501,8 @@ class Models(unittest.TestCase):
         self.assertEqual(got["months"][0], first)
         self.assertEqual((got["named"], got["unnamed"]), (5 * 34, 5 * 3))
         self.assertEqual(got["rows"][0]["commits"], 5 * 34)
-        self.assertEqual(A.month_name(first, year=True, full=True), "January 2025")
-        self.assertEqual(A.month_name(first, year=True), "Jan 2025")
+        self.assertEqual(A.month_name(first, year=True, full=True), "May 2025")
+        self.assertEqual(A.month_name(first, year=True), "May 2025")
 
     def test_a_made_up_model_name_is_not_a_row(self):
         """A display name is typed by whoever commits: one ladder repo signing its commits "Claude Opus 9" could put a

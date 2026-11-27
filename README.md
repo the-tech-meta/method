@@ -21,7 +21,7 @@ the scans again with `scan.py`: it needs git, the network and the disk for one c
 | `pipeline/analyze.py` | Counts the practices per league and writes every figure the site shows |
 | `pipeline/common.py` | Paths, the run date, the monthly grid, the `gh` wrapper |
 | `pipeline/tests/` | The tests of the rules, the scan and the panels |
-| `data/panel_pro.json`, `data/panel_ladder.json` | The two leagues: 209 and 200 repos, built on 2026-11-22 |
+| `data/panel_pro.json`, `data/panel_ladder.json` | The two leagues: 222 and 200 repos, built for 2026-11-22 |
 | `data/panel_rule.json` | How they were built: the day, the rule, how many repos each condition removed, the ladder's draw |
 | `data/ross_index.json` | Which repos each edition of the ROSS Index links to, with the source and the day it was read |
 
@@ -33,23 +33,30 @@ Follow one figure, the share of a league's repos that have a practice.
 
 1. its owner is an organisation;
 2. it is public, not archived, not a fork;
-3. it was created before 2025-01-01;
-4. it had a push in the last 90 days;
-5. it has 200 files or more at the tip of its default branch;
-6. it had 30 commits or more, merges left out, in the 90 days before 2025-01-17, the first snapshot;
-7. its owner is not a maker of a coding agent, a company one of them bought, or an owner tied to them in another way
-   (`LEFT_OUT`, each owner with a fact and a link: 38 owners on 2026-11-22).
+3. it had a push in the last 90 days;
+4. it has 200 files or more at the tip of its default branch;
+5. it was already active 18 months before the run date or earlier: 30 commits or more, merges left out, in the 90 days
+   before one of the run's monthly dates from the first (2025-01-17) to the window's start, 18 months before the run
+   date (2025-05-17 for Issue #1);
+6. its owner is not a maker of a coding agent, a company one of them bought, or an owner tied to them in another way
+   (`LEFT_OUT`, each owner with a fact and a link: 46 owners on 2026-11-27).
+
+The rule rolls: at each issue the window's start moves one month on and the earlier dates stay, so a repo that passed
+condition 5 passes it again, the pro scene grows as repos come of age, and a repo leaves only when it fails another
+condition. Activity before the first window (October 2024) is not read.
 
 The pro scene is every repo of the [ROSS Index](https://runacap.com/ross-index/) (any of its 30 editions from Q2 2020 to
 Q3 2026, read on 2026-11-22) that passes. The ladder is 200 repos drawn at random among the repos that pass and have 50
-stars or more, the pro scene left out: the creation days from 2007-10-29 to 2024-12-31 are put in an order drawn with the
-seed 20261122 and read one after the other until 200 or more repos pass (70 days, a pool of 203 on 2026-11-22), then 200
-are drawn from them. Both panels were built on 2026-11-22 (`built_on`) and stay fixed between runs, so that a move over
-time is a move of the same repos.
+stars or more, the pro scene left out: the creation days from 2007-10-29 to the day before the build (2026-11-21) are
+put in an order given by the seed 20261122 and each day alone, so that the order holds when the span grows, and read
+one after the other until 200 or more repos pass (68 days, a pool of 204, searched on 2026-11-27), then 200 are drawn
+from them. Both panels were built for 2026-11-22 (`built_on`): within an issue each league is the same repos at every
+date, so that a move over time is a move of the same repos, and at each issue the rule is applied again.
 
 **2. The snapshots** (`scan.py`). Each repo is cloned without file contents, back to 90 days before the first snapshot.
 Its file tree is read on a monthly grid that ends on the run date: for Issue #1, 23 snapshots from 2025-01-17 to
-2026-11-17. A few small files are read too (workflows, agent settings and hooks, instruction files, the package
+2026-11-17. The figures over time (`analyze.py`) are read from the window's start on, 19 snapshots from 2025-05-17, where
+every repo of both leagues was already active by the rule. A few small files are read too (workflows, agent settings and hooks, instruction files, the package
 manager's root files), and the commits of the 90 days behind each snapshot are read for agent signatures. Author
 names and addresses are tested in memory and never written out. The clone is deleted once scanned.
 
