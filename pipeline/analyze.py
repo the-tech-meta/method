@@ -999,7 +999,7 @@ BUILDS = [
     ),
     (
         "unmarked",
-        "No setup, agent at work",
+        "Agent only",
         "No instruction file, yet agents sign commits or open pull requests: the setup lives on developers' machines.",
         lambda f: f["agent_commits"] or f["agent_prs"],
     ),
