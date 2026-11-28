@@ -1046,8 +1046,8 @@ def lead(pro, ladder):
 def percent(p):
     """A share as the page prints it, the one way a sentence writes a percentage: whole percent, rounded half up as the page's
     Math.round does on the same p * 100 (Python's round() takes a half to the even number: 12.5 would read 12), and "<1%" for a
-    share above zero and under half a percent. Every percentage of a sentence goes through here."""
-    return "<1%" if 0 < p < 0.005 else "%d%%" % points(p)
+    share above zero and under one percent, so that 1 of 200 never reads "1%". Every percentage of a sentence goes through here."""
+    return "<1%" if 0 < p < 0.01 else "%d%%" % points(p)
 
 
 def pc(x):
